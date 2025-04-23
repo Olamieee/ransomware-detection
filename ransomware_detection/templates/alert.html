@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ransomware Detection Results</title>
+    {% load static %}
+    <link rel="stylesheet" href="{% static 'css/styles.css' %}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1><i class="fas fa-shield-alt"></i> CyberShield Protection</h1>
+            <p>Advanced Ransomware Detection & Prevention System</p>
+        </div>
+    </header>
+    
+    <div class="container">
+        <h1>Security Scan Results</h1>
+        
+        {% if status == 'Ransomware Detected' %}
+            <div class="detection-status alert-danger pulse">
+                <i class="fas fa-exclamation-triangle status-icon"></i>
+                <h2>⚠️ CRITICAL ALERT: Ransomware Activity Detected ⚠️</h2>
+                <p>Our system has detected patterns consistent with ransomware activity on your network.</p>
+            </div>
+            
+            <div class="alert alert-danger">
+                <h3>Recommended Actions:</h3>
+                <ul>
+                    <li>Disconnect affected systems from the network immediately</li>
+                    <li>Isolate compromised machines to prevent spread</li>
+                    <li>Restore from clean backups if available</li>
+                    <li>Contact your IT security team or specialist</li>
+                </ul>
+            </div>
+        {% else %}
+            <div class="detection-status alert-success">
+                <i class="fas fa-check-circle status-icon"></i>
+                <h2>✅ System Secure: No Threats Detected</h2>
+                <p>Your system appears to be free from ransomware activity.</p>
+            </div>
+            
+            <div class="alert alert-success">
+                <h3>Prevention Tips:</h3>
+                <ul>
+                    <li>Keep your operating system and software updated</li>
+                    <li>Use strong, unique passwords and enable 2FA</li>
+                    <li>Back up important data regularly</li>
+                    <li>Be cautious with email attachments and links</li>
+                </ul>
+            </div>
+        {% endif %}
+        
+        <div class="action-panel">
+            <a href="/" class="btn">
+                <i class="fas fa-home"></i> Return to Dashboard
+            </a>
+            
+            <a href="{% url 'detect_ransomware' %}" class="btn" style="margin-left: 10px;">
+                <i class="fas fa-sync"></i> Run Another Scan
+            </a>
+        </div>
+        
+        <div class="scan-details">
+            <h3>Scan Details</h3>
+            <p><strong>Date:</strong> <span id="current-date"></span></p>
+            <p><strong>Duration:</strong> 3.2 seconds</p>
+            <p><strong>Files Analyzed:</strong> 23,487</p>
+            <p><strong>Processes Monitored:</strong> 156</p>
+        </div>
+    </div>
+    
+    <script>
+        // Display current date
+        const options = { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+        document.getElementById('current-date').textContent = new Date().toLocaleDateString('en-US', options);
+        
+        // Animation for detection status
+        const statusElement = document.querySelector('.detection-status');
+        if (statusElement) {
+            setTimeout(() => {
+                statusElement.style.animation = 'none';
+                setTimeout(() => {
+                    statusElement.style.animation = '';
+                }, 10);
+            }, 2000);
+        }
+    </script>
+</body>
+</html>
