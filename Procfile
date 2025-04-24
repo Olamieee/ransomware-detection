@@ -1,1 +1,1 @@
-web: gunicorn ransomware.wsgi --log-file -
+web: gunicorn ransomware_detection.wsgi --log-file -
