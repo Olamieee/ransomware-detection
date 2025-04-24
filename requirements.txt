@@ -8,3 +8,4 @@ pandas
 pyserial
 django_q
 pkg_resources
+setuptools
