@@ -1,0 +1,8 @@
+Django
+gunicorn
+psutil
+joblib
+scikit-learn
+numpy
+pandas
+pyserial
