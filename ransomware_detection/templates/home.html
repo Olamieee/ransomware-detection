@@ -1,64 +1,73 @@
+{% load static %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Ransomware Detection System</title>
-    {% load static %}
+    <title>CyberShield Ransomware Detection</title>
     <link rel="stylesheet" href="{% static 'css/styles.css' %}">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
 <body>
-    <header>
-        <div class="container">
-            <h1><i class="fas fa-shield-alt"></i> CyberShield Protection</h1>
-            <p>Advanced Ransomware Detection & Prevention System</p>
-        </div>
-    </header>
-    
-    <div class="container">
-        <h1>Ransomware Threat Intelligence</h1>
-        <p>Our advanced system continuously monitors your network for suspicious activity patterns that may indicate ransomware attacks.</p>
-        
-        <div class="features">
-            <div class="feature-item">
-                <i class="fas fa-search icon"></i>
-                <h3>Real-Time Detection</h3>
-                <p>Monitors file system activities and network traffic for signs of encryption or malicious behavior.</p>
+    <div class="app-wrapper">
+        <header class="header">
+            <div class="header-content">
+                <div class="logo-container">
+                    <i class="fas fa-shield-alt logo" style="color: white; font-size: 2rem;"></i>
+                    <h1 class="brand">CyberShield Protection</h1>
+                </div>
+                <p class="tagline">Advanced Ransomware Detection & Prevention System</p>
             </div>
-            <div class="feature-item">
-                <i class="fas fa-bell icon"></i>
-                <h3>Instant Alerts</h3>
-                <p>Receive immediate notifications when suspicious activity is detected on your network.</p>
+        </header>
+
+        <main class="main-content">
+            <h2 class="page-title">Ransomware Threat Intelligence</h2>
+            
+            <p>Our advanced system continuously monitors your network for suspicious activity patterns that may indicate ransomware attacks.</p>
+            
+            <div class="features-container">
+                <div class="feature">
+                    <i class="fas fa-search feature-icon"></i>
+                    <h3>Real-Time Detection</h3>
+                    <p>Monitors file system activities and network traffic for signs of encryption.</p>
+                </div>
+                <div class="feature">
+                    <i class="fas fa-bell feature-icon"></i>
+                    <h3>Instant Alerts</h3>
+                    <p>Receive immediate notifications when suspicious activity is detected.</p>
+                </div>
+                <div class="feature">
+                    <i class="fas fa-lock feature-icon"></i>
+                    <h3>Data Protection</h3>
+                    <p>Prevents unauthorized encryption of sensitive data.</p>
+                </div>
             </div>
-            <div class="feature-item">
-                <i class="fas fa-lock icon"></i>
-                <h3>Data Protection</h3>
-                <p>Prevents unauthorized encryption of sensitive data across your infrastructure.</p>
+            
+            <div class="scan-section">
+                <p>Run a comprehensive scan of your system to detect potential ransomware threats.</p>
+                
+                <div class="actions">
+                    <a href="{% url 'detect_ransomware' %}" class="button" id="scan-button">
+                        <i class="fas fa-radar icon"></i> Run Security Scan
+                    </a>
+                </div>
+                
+                <div id="loading-container" class="loading-container" style="display: none;">
+                    <div class="loading-spinner"></div>
+                    <p class="loading-text">Scanning your system for threats...</p>
+                </div>
             </div>
-        </div>
-        
-        <div class="action-panel">
-            <p>Run a comprehensive scan of your system to detect potential ransomware threats.</p>
-            <a href="{% url 'detect_ransomware' %}" class="btn" id="scan-btn">
-                <i class="fas fa-radar"></i> Run Security Scan
-            </a>
-        </div>
-        
-        <div id="loading-indicator" style="display: none;">
-            <div class="loading"><div></div><div></div></div>
-            <p>Scanning your system for threats...</p>
-        </div>
+        </main>
     </div>
-    
+
     <script>
-        document.getElementById('scan-btn').addEventListener('click', function(e) {
+        document.getElementById('scan-button').addEventListener('click', function(e) {
             e.preventDefault();
             
             // Show loading animation
-            document.getElementById('loading-indicator').style.display = 'block';
+            document.getElementById('loading-container').style.display = 'block';
             
-            // Simulate delay then redirect (in production you'd make an actual AJAX request)
+            // Simulate delay then redirect
             setTimeout(function() {
                 window.location.href = e.target.href;
             }, 2000);
