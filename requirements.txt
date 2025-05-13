@@ -1,4 +1,4 @@
-Django
+streamlit
 gunicorn
 psutil
 joblib
@@ -6,5 +6,9 @@ scikit-learn
 numpy
 pandas
 pyserial
-django_q
-setuptools
+pefile
+sqlite3
+logging
+datetime
+time
+tempfile

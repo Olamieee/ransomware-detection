@@ -1,0 +1,1 @@
+web: streamlit run ransomware-app.py --server.port=$PORT
