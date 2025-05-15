@@ -2,4 +2,8 @@ sample_pe_data.csv
 arduino_helper.py
 db_helper.py
 ransomware_alert_system.ino
-.gitignore
+streamlit_app_updated 2.py
+Book1.csv
+ransomware_detector.log
+ransomware_detection.db_helper
+Procfile

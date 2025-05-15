@@ -10,6 +10,7 @@ import sqlite3
 import logging
 import datetime
 import time
+import plotly.express as px
 
 # Configure logging
 logging.basicConfig(
@@ -75,7 +76,7 @@ st.title("Ransomware Detection System")
 # Create sidebar navigation
 page = st.sidebar.radio(
     "Navigation",
-    ["Detection", "Logs", "Arduino Instructions", "About"]
+    ["Detection", "Logs", "About"]
 )
 
 if page == "Detection":
@@ -364,7 +365,41 @@ elif page == "Logs":
                 benign_count = sum(logs_df['prediction'] == 1)
                 st.metric("Benign / Malicious", f"{benign_count} / {len(logs_df) - benign_count}")
             
+            # Add a line chart to display recent prediction attempts
+            st.subheader("Recent Prediction Timeline")
+            
+            # Create a DataFrame for plotting
+            plot_df = logs_df.copy()
+            plot_df['confidence_value'] = pd.to_numeric(plot_df['confidence'].str.rstrip('%')) / 100
+            
+            # Create two separate dataframes - one for benign and one for malicious
+            benign_df = plot_df[plot_df['prediction'] == 1].copy()
+            malicious_df = plot_df[plot_df['prediction'] == 0].copy()
+            
+            # Create the line chart using plotly
+            fig = px.line(
+                plot_df,
+                x="detection_time",
+                y="confidence_value",
+                color="prediction_text",
+                markers=True,
+                title="Recent Prediction Confidence Timeline",
+                labels={"detection_time": "Time", "confidence_value": "Confidence", "prediction_text": "Prediction"},
+                color_discrete_map={"BENIGN": "green", "MALICIOUS": "red"}
+            )
+            
+            fig.update_layout(
+                xaxis_title="Detection Time",
+                yaxis_title="Confidence",
+                yaxis_tickformat=".0%",
+                legend_title="Prediction Result",
+                hovermode="closest"
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
             # Display the logs
+            st.subheader("Detection Log Entries")
             st.dataframe(logs_df[['id', 'filename', 'detection_time', 'prediction_text', 'confidence']])
             
             # Export option
@@ -381,191 +416,6 @@ elif page == "Logs":
         logger.error(f"Error accessing logs: {str(e)}")
         st.error(f"Error accessing logs: {str(e)}")
 
-elif page == "Arduino Instructions":
-    st.header("Arduino Implementation")
-    
-    st.info("This section provides instructions and code for implementing a basic ransomware detection alert system using Arduino")
-    
-    st.subheader("Hardware Requirements")
-    st.markdown("""
-    - Arduino Uno or similar board
-    - RGB LED or separate LEDs (red, green)
-    - Buzzer for alerts
-    - Jumper wires
-    - 220Ω resistors for LEDs
-    """)
-    
-    st.subheader("Wiring Diagram")
-    st.image("https://via.placeholder.com/400x300", caption="Connect components according to this diagram")
-    
-    st.subheader("Arduino Code (.ino)")
-    
-    arduino_code = """
-/*
- * Ransomware Detection Alert System for Arduino
- * 
- * This sketch receives signals from the ransomware detection system
- * and triggers visual and audible alerts when malware is detected.
- * 
- * Communication via Serial at 9600 baud rate
- * Commands:
- * - "MALWARE": Triggers red LED and alarm
- * - "BENIGN": Turns on green LED
- * - "RESET": Turns off all indicators
- */
-
-// Pin definitions
-const int RED_LED_PIN = 9;    // Red LED for malware alerts
-const int GREEN_LED_PIN = 10; // Green LED for benign files
-const int BUZZER_PIN = 11;    // Buzzer for audio alerts
-
-// Variables
-String inputString = "";        // String to hold incoming data
-boolean stringComplete = false; // Whether the string is complete
-
-void setup() {
-  // Initialize serial communication
-  Serial.begin(9600);
-  
-  // Initialize pins
-  pinMode(RED_LED_PIN, OUTPUT);
-  pinMode(GREEN_LED_PIN, OUTPUT);
-  pinMode(BUZZER_PIN, OUTPUT);
-  
-  // Reset all outputs
-  digitalWrite(RED_LED_PIN, LOW);
-  digitalWrite(GREEN_LED_PIN, LOW);
-  digitalWrite(BUZZER_PIN, LOW);
-  
-  // Send ready signal
-  Serial.println("Arduino Ransomware Alert System Ready");
-}
-
-void loop() {
-  // Process commands when a complete string is received
-  if (stringComplete) {
-    Serial.print("Received command: ");
-    Serial.println(inputString);
-    
-    // Process the command
-    if (inputString.indexOf("MALWARE") >= 0) {
-      triggerMalwareAlert();
-    } 
-    else if (inputString.indexOf("BENIGN") >= 0) {
-      indicateBenign();
-    }
-    else if (inputString.indexOf("RESET") >= 0) {
-      resetAlerts();
-    }
-    
-    // Clear the string for new input
-    inputString = "";
-    stringComplete = false;
-  }
-}
-
-// Serial event occurs whenever new data comes in
-void serialEvent() {
-  while (Serial.available()) {
-    char inChar = (char)Serial.read();
-    inputString += inChar;
-    
-    // If the incoming character is a newline, set a flag
-    if (inChar == '\n') {
-      stringComplete = true;
-    }
-  }
-}
-
-// Triggers alert for malware detection
-void triggerMalwareAlert() {
-  // Visual alert
-  digitalWrite(RED_LED_PIN, HIGH);
-  digitalWrite(GREEN_LED_PIN, LOW);
-  
-  // Sound alert (pulsing tone)
-  for (int i = 0; i < 5; i++) {
-    tone(BUZZER_PIN, 1000); // 1kHz tone
-    delay(200);
-    noTone(BUZZER_PIN);
-    delay(100);
-  }
-  
-  Serial.println("ALERT: RANSOMWARE DETECTED!");
-}
-
-// Indicates benign file
-void indicateBenign() {
-  digitalWrite(RED_LED_PIN, LOW);
-  digitalWrite(GREEN_LED_PIN, HIGH);
-  
-  // Short confirmation beep
-  tone(BUZZER_PIN, 2000);
-  delay(100);
-  noTone(BUZZER_PIN);
-  
-  Serial.println("Status: File is benign");
-}
-
-// Resets all alerts
-void resetAlerts() {
-  digitalWrite(RED_LED_PIN, LOW);
-  digitalWrite(GREEN_LED_PIN, LOW);
-  noTone(BUZZER_PIN);
-  
-  Serial.println("System reset");
-}
-    """
-    
-    st.code(arduino_code, language="cpp")
-    
-    st.download_button(
-        label="Download Arduino Code",
-        data=arduino_code,
-        file_name="ransomware_alert_system.ino",
-        mime="text/plain",
-    )
-    
-    st.subheader("Python Integration")
-    st.markdown("""
-    To connect your Streamlit app with the Arduino:
-    
-    1. Install PySerial: `pip install pyserial`
-    2. Add the following code to your app to send alerts to Arduino:
-    
-    ```python
-    import serial
-    import time
-    
-    def send_alert_to_arduino(message):
-        try:
-            # Change COM port as needed for your system
-            arduino = serial.Serial('COM3', 9600, timeout=1)
-            time.sleep(2)  # Wait for connection to establish
-            
-            # Send the message
-            arduino.write(f"{message}\n".encode())
-            time.sleep(0.1)
-            
-            # Read response
-            response = arduino.readline().decode().strip()
-            print(f"Arduino says: {response}")
-            
-            arduino.close()
-            return True
-        except Exception as e:
-            print(f"Error communicating with Arduino: {str(e)}")
-            return False
-    
-    # Example usage:
-    # send_alert_to_arduino("MALWARE")
-    # send_alert_to_arduino("BENIGN")
-    # send_alert_to_arduino("RESET")
-    ```
-    
-    Add this function to your main app and call it when you detect ransomware.
-    """)
-
 elif page == "About":
     st.header("About")
     st.info("""
@@ -576,7 +426,6 @@ elif page == "About":
     - Direct file upload and analysis
     - CSV batch processing
     - Logging and history tracking
-    - Arduino integration for physical alerts
     """)
     
     st.subheader("How It Works")
