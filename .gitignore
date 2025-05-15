@@ -5,5 +5,5 @@ ransomware_alert_system.ino
 streamlit_app_updated 2.py
 Book1.csv
 ransomware_detector.log
-ransomware_detection.db_helper
+ransomware_detection.db
 Procfile
