@@ -11,5 +11,5 @@ pefile
 logging
 datetime
 #time
-tempfile
+#tempfile
 plotly
