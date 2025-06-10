@@ -7,9 +7,9 @@ numpy
 pandas
 pyserial
 pefile
-sqlite3
+#sqlite3
 logging
 datetime
-time
-tempfile
+#time
+#tempfile
 plotly
