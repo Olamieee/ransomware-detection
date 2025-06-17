@@ -86,6 +86,9 @@ void handleBenignDetection() {
   Serial.flush();
   clearAllAlerts();
   
+  // Sweet melody for benign detection
+  playBenignMelody();
+  
   digitalWrite(GREEN_LED, HIGH);
   lastAlertTime = millis();
 }
@@ -142,15 +145,16 @@ void handleBatchClean() {
   Serial.flush();
   clearAllAlerts();
   
-  // Success sequence for clean batch
+  // Visual indicator with success melody
   for (int i = 0; i < 3; i++) {
     digitalWrite(GREEN_LED, HIGH);
-    tone(BUZZER, 2000);
-    delay(200);
+    delay(150);
     digitalWrite(GREEN_LED, LOW);
-    noTone(BUZZER);
-    delay(200);
+    delay(100);
   }
+  
+  // Play success melody
+  playSuccessMelody();
   
   // Keep green LED on
   digitalWrite(GREEN_LED, HIGH);
@@ -197,6 +201,32 @@ void clearAllAlerts() {
   digitalWrite(GREEN_LED, LOW);
   digitalWrite(RED_LED, LOW);
   noTone(BUZZER);
+}
+
+void playBenignMelody() {
+  // Sweet ascending melody for benign files
+  int melody[] = {523, 587, 659, 698, 784}; // C5, D5, E5, F5, G5
+  int noteDurations[] = {200, 200, 200, 200, 400};
+  
+  for (int i = 0; i < 5; i++) {
+    tone(BUZZER, melody[i]);
+    delay(noteDurations[i]);
+    noTone(BUZZER);
+    delay(50); // Short pause between notes
+  }
+}
+
+void playSuccessMelody() {
+  // Happy success tune for clean batches
+  int melody[] = {659, 659, 784, 1047, 784, 659}; // E5, E5, G5, C6, G5, E5
+  int noteDurations[] = {150, 150, 200, 300, 200, 400};
+  
+  for (int i = 0; i < 6; i++) {
+    tone(BUZZER, melody[i]);
+    delay(noteDurations[i]);
+    noTone(BUZZER);
+    delay(30);
+  }
 }
 
 void startupSequence() {
