@@ -1,6 +1,6 @@
-const int GREEN_LED = 10;
-const int RED_LED = 11;
-const int BUZZER = 12;
+const int GREEN_LED = 3;
+const int RED_LED = 8;
+const int BUZZER = 13;
 
 String inputString = "";
 bool stringComplete = false;
@@ -20,7 +20,7 @@ void setup() {
   digitalWrite(BUZZER, LOW);
   
   Serial.println("Arduino Ransomware Alert System Ready");
-  Serial.flush();
+  Serial.flush(); 
   
   startupSequence();
   isConnected = true;
@@ -75,22 +75,73 @@ void processCommand(String command) {
   else if (command == "RESET") {
     handleReset();
   }
+  else if (command == "TEST_GREEN") {
+    testGreenLED();
+  }
+  else if (command == "TEST_RED") {
+    testRedLED();
+  }
   else {
     Serial.println("Unknown command: " + command);
     Serial.flush();
   }
 }
 
-void handleBenignDetection() {
-  Serial.println("Status: File is BENIGN");
+void testGreenLED() {
+  Serial.println("Testing GREEN LED on pin 3...");
   Serial.flush();
   clearAllAlerts();
   
-  // Sweet melody for benign detection
-  playBenignMelody();
+  // Flash green LED 5 times
+  for (int i = 0; i < 5; i++) {
+    digitalWrite(GREEN_LED, HIGH);
+    Serial.println("GREEN LED ON");
+    delay(500);
+    digitalWrite(GREEN_LED, LOW);
+    Serial.println("GREEN LED OFF");
+    delay(500);
+  }
+  Serial.println("GREEN LED test complete");
+  Serial.flush();
+}
+
+void testRedLED() {
+  Serial.println("Testing RED LED on pin 8...");
+  Serial.flush();
+  clearAllAlerts();
   
+  // Flash red LED 5 times
+  for (int i = 0; i < 5; i++) {
+    digitalWrite(RED_LED, HIGH);
+    Serial.println("RED LED ON");
+    delay(500);
+    digitalWrite(RED_LED, LOW);
+    Serial.println("RED LED OFF");
+    delay(500);
+  }
+  Serial.println("RED LED test complete");
+  Serial.flush();
+}
+
+void handleBenignDetection() {
+  Serial.println("Status: File is BENIGN - GREEN LED ON");
+  Serial.flush();
+  clearAllAlerts();
+  
+  // First, test the green LED explicitly
+  digitalWrite(GREEN_LED, HIGH);
+  Serial.println("GREEN LED should be ON now");
+  Serial.flush();
+  
+  // Soft confirmation beep for benign detection
+  playSafeFileSound();
+  
+  // Ensure green LED stays on
   digitalWrite(GREEN_LED, HIGH);
   lastAlertTime = millis();
+  
+  Serial.println("GREEN LED status after benign detection: ON");
+  Serial.flush();
 }
 
 void handleRansomwareDetection() {
@@ -98,19 +149,12 @@ void handleRansomwareDetection() {
   Serial.flush();
   clearAllAlerts();
   
-  // Flash red LED with buzzer pattern for ransomware alert
-  for (int i = 0; i < 3; i++) {
-    digitalWrite(RED_LED, HIGH);
-    tone(BUZZER, 1000);
-    delay(200);
-    digitalWrite(RED_LED, LOW);
-    noTone(BUZZER);
-    delay(200);
-  }
+  // Critical ransomware alert sequence
+  playRansomwareAlert();
   
   // Keep red LED on and buzzer sounding
   digitalWrite(RED_LED, HIGH);
-  tone(BUZZER, 1000);
+  tone(BUZZER, 800); // Persistent warning tone
   lastAlertTime = millis();
 }
 
@@ -124,49 +168,48 @@ void handleBatchMalicious(String command) {
   Serial.println("Batch result: " + countInfo);
   Serial.flush();
   
-  // Extended alert sequence for batch detection
-  for (int i = 0; i < 5; i++) {
-    digitalWrite(RED_LED, HIGH);
-    tone(BUZZER, 800 + (i * 100)); // Ascending tone
-    delay(300);
-    digitalWrite(RED_LED, LOW);
-    noTone(BUZZER);
-    delay(200);
-  }
+  // Multiple threat alert sequence
+  playBatchMaliciousAlert();
   
   // Final sustained alert
   digitalWrite(RED_LED, HIGH);
-  tone(BUZZER, 1500);
+  tone(BUZZER, 900); // Higher pitch for batch threats
   lastAlertTime = millis();
 }
 
 void handleBatchClean() {
-  Serial.println("BATCH COMPLETE: All files clean");
+  Serial.println("BATCH COMPLETE: All files clean - GREEN LED ON");
   Serial.flush();
   clearAllAlerts();
   
   // Visual indicator with success melody
   for (int i = 0; i < 3; i++) {
     digitalWrite(GREEN_LED, HIGH);
+    Serial.println("GREEN LED flash ON");
     delay(150);
     digitalWrite(GREEN_LED, LOW);
+    Serial.println("GREEN LED flash OFF");
     delay(100);
   }
   
-  // Play success melody
-  playSuccessMelody();
+  // Play all-clear confirmation
+  playBatchCleanSound();
   
   // Keep green LED on
   digitalWrite(GREEN_LED, HIGH);
+  Serial.println("GREEN LED final state: ON");
   lastAlertTime = millis();
+  Serial.flush();
 }
 
 void handleStatusRequest() {
   Serial.println("Arduino Status: READY");
-  Serial.print("Green LED: ");
+  Serial.print("Green LED (Pin 3): ");
   Serial.println(digitalRead(GREEN_LED) ? "ON" : "OFF");
-  Serial.print("Red LED: ");
+  Serial.print("Red LED (Pin 8): ");
   Serial.println(digitalRead(RED_LED) ? "ON" : "OFF");
+  Serial.print("Buzzer (Pin 13): ");
+  Serial.println("Ready");
   Serial.flush();
 }
 
@@ -203,49 +246,135 @@ void clearAllAlerts() {
   noTone(BUZZER);
 }
 
-void playBenignMelody() {
-  // Sweet ascending melody for benign files
-  int melody[] = {523, 587, 659, 698, 784}; // C5, D5, E5, F5, G5
-  int noteDurations[] = {200, 200, 200, 200, 400};
-  
-  for (int i = 0; i < 5; i++) {
-    tone(BUZZER, melody[i]);
-    delay(noteDurations[i]);
+void playSafeFileSound() {
+  // Two gentle confirmation beeps for safe files
+  tone(BUZZER, 400);  // Low, reassuring tone
+  delay(150);
+  noTone(BUZZER);
+  delay(100);
+  tone(BUZZER, 500);  // Slightly higher confirmation
+  delay(200);
+  noTone(BUZZER);
+}
+
+void playRansomwareAlert() {
+  // Critical security alert pattern - urgent and attention-grabbing
+  for (int cycle = 0; cycle < 4; cycle++) {
+    // Rapid high-pitched alarm bursts
+    for (int burst = 0; burst < 3; burst++) {
+      digitalWrite(RED_LED, HIGH);
+      tone(BUZZER, 1500); // High urgency tone
+      delay(150);
+      digitalWrite(RED_LED, LOW);
+      noTone(BUZZER);
+      delay(50);
+    }
+    
+    // Brief pause between cycles
+    delay(200);
+    
+    // Secondary warning tone
+    digitalWrite(RED_LED, HIGH);
+    tone(BUZZER, 1000); // Lower warning tone
+    delay(300);
+    digitalWrite(RED_LED, LOW);
     noTone(BUZZER);
-    delay(50); // Short pause between notes
+    delay(150);
   }
 }
 
-void playSuccessMelody() {
-  // Happy success tune for clean batches
-  int melody[] = {659, 659, 784, 1047, 784, 659}; // E5, E5, G5, C6, G5, E5
-  int noteDurations[] = {150, 150, 200, 300, 200, 400};
+void playBatchMaliciousAlert() {
+  // Escalating threat level alert for multiple malicious files
+  digitalWrite(RED_LED, HIGH);
   
-  for (int i = 0; i < 6; i++) {
-    tone(BUZZER, melody[i]);
-    delay(noteDurations[i]);
-    noTone(BUZZER);
-    delay(30);
+  // Siren-like warning pattern
+  for (int sweep = 0; sweep < 3; sweep++) {
+    // Rising siren
+    for (int freq = 600; freq <= 1200; freq += 50) {
+      tone(BUZZER, freq);
+      delay(30);
+    }
+    // Falling siren
+    for (int freq = 1200; freq >= 600; freq -= 50) {
+      tone(BUZZER, freq);
+      delay(30);
+    }
   }
+  
+  digitalWrite(RED_LED, LOW);
+  noTone(BUZZER);
+  delay(200);
+  
+  // Final urgent pulses
+  for (int pulse = 0; pulse < 5; pulse++) {
+    digitalWrite(RED_LED, HIGH);
+    tone(BUZZER, 1400);
+    delay(100);
+    digitalWrite(RED_LED, LOW);
+    noTone(BUZZER);
+    delay(100);
+  }
+}
+
+void playBatchCleanSound() {
+  // Professional "all clear" confirmation sequence
+  // Three descending tones indicating security cleared
+  tone(BUZZER, 800);
+  delay(200);
+  noTone(BUZZER);
+  delay(100);
+  
+  tone(BUZZER, 600);
+  delay(250);
+  noTone(BUZZER);
+  delay(100);
+  
+  tone(BUZZER, 450);
+  delay(400);
+  noTone(BUZZER);
+  delay(200);
+  
+  // Final confirmation beep
+  tone(BUZZER, 500);
+  delay(150);
+  noTone(BUZZER);
 }
 
 void startupSequence() {
   Serial.println("Starting system check...");
   Serial.flush();
   
+  // System initialization sound
+  tone(BUZZER, 600);
+  delay(200);
+  tone(BUZZER, 800);
+  delay(200);
+  noTone(BUZZER);
+  
   // Test green LED
+  Serial.println("Testing GREEN LED (Pin 3)...");
   digitalWrite(GREEN_LED, HIGH);
-  delay(500);
+  delay(1000);  // Longer delay to see it clearly
   digitalWrite(GREEN_LED, LOW);
   
   // Test red LED
+  Serial.println("Testing RED LED (Pin 8)...");
   digitalWrite(RED_LED, HIGH);
-  delay(500);
+  delay(1000);
   digitalWrite(RED_LED, LOW);
   
-  // Test buzzer
+  // Test buzzer with security system ready tone
+  Serial.println("Testing BUZZER (Pin 13)...");
   tone(BUZZER, 1000);
-  delay(200);
+  delay(150);
+  noTone(BUZZER);
+  delay(100);
+  tone(BUZZER, 1200);
+  delay(150);
+  noTone(BUZZER);
+  delay(100);
+  tone(BUZZER, 800);
+  delay(300);
   noTone(BUZZER);
   
   Serial.println("System check complete - Ready for detection");

@@ -583,9 +583,9 @@ def main():
         - 📈 Multiple visualization options
         
         **Arduino Connections:**
-        - Green LED (Pin 10): Benign files
-        - Red LED (Pin 11): Ransomware detected  
-        - Buzzer (Pin 12): Audio alert
+        - Green LED (Pin 3): Benign files
+        - Red LED (Pin 8): Ransomware detected  
+        - Buzzer (Pin 13): Audio alert
         
         **Detection Features:**
         - PE header analysis
