@@ -1,382 +1,424 @@
-const int GREEN_LED = 3;
-const int RED_LED = 8;
-const int BUZZER = 13;
+/*
+ * Ransomware Detection System - Arduino Controller
+ * Compatible with Python Streamlit Detection System
+ * 
+ * Features:
+ * - Serial command processing with buffer management
+ * - Non-blocking LED and buzzer control
+ * - Themed sound patterns for detection results
+ * - Automatic timeout and cleanup
+ * - Built-in testing mode
+ * - Memory-efficient operation
+ */
 
-String inputString = "";
-bool stringComplete = false;
-unsigned long lastAlertTime = 0;
-const unsigned long ALERT_DURATION = 3000;
-const unsigned long BATCH_ALERT_DURATION = 5000;
-bool isConnected = false;
+// Pin Definitions
+const int GREEN_LED_PIN = 3;    // Benign detection indicator
+const int RED_LED_PIN = 8;      // Malicious detection indicator
+const int BUZZER_PIN = 13;      // Audio alert system
+
+// Timing Constants
+const unsigned long LED_DURATION = 3000;        // LED display time (3 seconds)
+const unsigned long SERIAL_TIMEOUT = 100;       // Serial read timeout
+const unsigned long HEARTBEAT_INTERVAL = 30000; // Heartbeat every 30 seconds
+
+// Sound Patterns (frequencies in Hz, durations in ms)
+// Benign Sound: Gentle ascending chime sequence
+const int BENIGN_NOTES[] = {523, 659, 784, 1047}; // C5, E5, G5, C6
+const int BENIGN_DURATIONS[] = {150, 150, 150, 300};
+const int BENIGN_NOTE_COUNT = 4;
+
+// Malicious Sound: Urgent warning sequence
+const int MALICIOUS_NOTES[] = {220, 0, 220, 0, 330, 0, 220, 0, 220}; // A3 with pauses, then E4
+const int MALICIOUS_DURATIONS[] = {200, 100, 200, 100, 400, 200, 200, 100, 400};
+const int MALICIOUS_NOTE_COUNT = 9;
+
+// System State Variables
+struct SystemState {
+  bool greenLedActive = false;
+  bool redLedActive = false;
+  bool soundPlaying = false;
+  unsigned long ledStartTime = 0;
+  unsigned long lastHeartbeat = 0;
+  int currentNote = 0;
+  unsigned long noteStartTime = 0;
+  bool isBenignSequence = false;
+  String inputBuffer = "";
+  unsigned long lastActivity = 0;
+  bool connectionEstablished = false;
+} state;
+
+// System Statistics
+struct Statistics {
+  unsigned long benignCount = 0;
+  unsigned long maliciousCount = 0;
+  unsigned long totalCommands = 0;
+  unsigned long systemUptime = 0;
+  unsigned long lastResetTime = 0;
+} stats;
 
 void setup() {
+  // Initialize serial communication
   Serial.begin(9600);
-  pinMode(GREEN_LED, OUTPUT);
-  pinMode(RED_LED, OUTPUT);
-  pinMode(BUZZER, OUTPUT);
+  Serial.setTimeout(SERIAL_TIMEOUT);
   
-  digitalWrite(GREEN_LED, LOW);
-  digitalWrite(RED_LED, LOW);
-  digitalWrite(BUZZER, LOW);
+  // Configure pins
+  pinMode(GREEN_LED_PIN, OUTPUT);
+  pinMode(RED_LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
   
-  Serial.println("Arduino Ransomware Alert System Ready");
-  Serial.flush(); 
+  // Initialize all outputs to OFF
+  digitalWrite(GREEN_LED_PIN, LOW);
+  digitalWrite(RED_LED_PIN, LOW);
+  digitalWrite(BUZZER_PIN, LOW);
   
-  startupSequence();
-  isConnected = true;
+  // Startup sequence
+  performStartupSequence();
+  
+  // Initialize timestamps
+  state.lastHeartbeat = millis();
+  stats.lastResetTime = millis();
+  
+  Serial.println("RANSOMWARE_DETECTOR_READY");
+  Serial.println("Commands: BENIGN, RANSOMWARE, TEST, STATUS, RESET");
+  Serial.println("Waiting for connection...");
 }
 
 void loop() {
-  if (stringComplete) {
-    processCommand(inputString);
-    inputString = "";
-    stringComplete = false;
-  }
+  unsigned long currentTime = millis();
   
-  handleAlertTimeout();
+  // Handle serial communication
+  handleSerialInput();
   
-  // Handle connection status
-  if (isConnected && millis() > 10000) { // After 10 seconds of startup
-    // System is ready and waiting for commands
-  }
+  // Update LED states
+  updateLEDs(currentTime);
+  
+  // Handle sound playback
+  updateSoundPlayback(currentTime);
+  
+  // Send periodic heartbeat
+  sendHeartbeat(currentTime);
+  
+  // Update system uptime
+  stats.systemUptime = currentTime - stats.lastResetTime;
+  
+  // Small delay to prevent overwhelming the system
+  delay(10);
 }
 
-void serialEvent() {
-  while (Serial.available()) {
-    char inChar = (char)Serial.read();
-    if (inChar == '\n') {
-      stringComplete = true;
-    } else if (inChar != '\r') { // Ignore carriage return
-      inputString += inChar;
+void handleSerialInput() {
+  if (Serial.available() > 0) {
+    char incomingByte = Serial.read();
+    
+    // Handle complete lines
+    if (incomingByte == '\n' || incomingByte == '\r') {
+      if (state.inputBuffer.length() > 0) {
+        processCommand(state.inputBuffer);
+        state.inputBuffer = "";
+      }
     }
+    // Buffer management - prevent overflow
+    else if (state.inputBuffer.length() < 50) {
+      state.inputBuffer += incomingByte;
+    }
+    else {
+      // Buffer overflow protection
+      state.inputBuffer = "";
+      Serial.println("ERROR: Command too long");
+    }
+    
+    state.lastActivity = millis();
   }
 }
 
 void processCommand(String command) {
   command.trim();
-  Serial.println("Received: " + command);
-  Serial.flush();
+  command.toUpperCase();
+  
+  stats.totalCommands++;
+  
+  Serial.print("RECEIVED: ");
+  Serial.println(command);
+  
+  // Establish connection on first command
+  if (!state.connectionEstablished) {
+    state.connectionEstablished = true;
+    Serial.println("CONNECTION_ESTABLISHED");
+    performConnectionTest();
+  }
   
   if (command == "BENIGN") {
     handleBenignDetection();
-  } 
-  else if (command == "RANSOMWARE") {
-    handleRansomwareDetection();
   }
-  else if (command.startsWith("BATCH_MALICIOUS:")) {
-    handleBatchMalicious(command);
+  else if (command == "RANSOMWARE" || command == "MALICIOUS") {
+    handleMaliciousDetection();
   }
-  else if (command == "BATCH_CLEAN") {
-    handleBatchClean();
+  else if (command == "TEST") {
+    performSystemTest();
   }
   else if (command == "STATUS") {
-    handleStatusRequest();
+    sendSystemStatus();
   }
   else if (command == "RESET") {
-    handleReset();
+    resetSystem();
   }
-  else if (command == "TEST_GREEN") {
-    testGreenLED();
-  }
-  else if (command == "TEST_RED") {
-    testRedLED();
+  else if (command == "STOP") {
+    stopAllAlerts();
   }
   else {
-    Serial.println("Unknown command: " + command);
-    Serial.flush();
+    Serial.print("ERROR: Unknown command - ");
+    Serial.println(command);
   }
-}
-
-void testGreenLED() {
-  Serial.println("Testing GREEN LED on pin 3...");
-  Serial.flush();
-  clearAllAlerts();
-  
-  // Flash green LED 5 times
-  for (int i = 0; i < 5; i++) {
-    digitalWrite(GREEN_LED, HIGH);
-    Serial.println("GREEN LED ON");
-    delay(500);
-    digitalWrite(GREEN_LED, LOW);
-    Serial.println("GREEN LED OFF");
-    delay(500);
-  }
-  Serial.println("GREEN LED test complete");
-  Serial.flush();
-}
-
-void testRedLED() {
-  Serial.println("Testing RED LED on pin 8...");
-  Serial.flush();
-  clearAllAlerts();
-  
-  // Flash red LED 5 times
-  for (int i = 0; i < 5; i++) {
-    digitalWrite(RED_LED, HIGH);
-    Serial.println("RED LED ON");
-    delay(500);
-    digitalWrite(RED_LED, LOW);
-    Serial.println("RED LED OFF");
-    delay(500);
-  }
-  Serial.println("RED LED test complete");
-  Serial.flush();
 }
 
 void handleBenignDetection() {
-  Serial.println("Status: File is BENIGN - GREEN LED ON");
-  Serial.flush();
-  clearAllAlerts();
+  stopAllAlerts(); // Stop any current activity
   
-  // First, test the green LED explicitly
-  digitalWrite(GREEN_LED, HIGH);
-  Serial.println("GREEN LED should be ON now");
-  Serial.flush();
+  state.greenLedActive = true;
+  state.redLedActive = false;
+  state.ledStartTime = millis();
   
-  // Soft confirmation beep for benign detection
-  playSafeFileSound();
+  startBenignSound();
+  stats.benignCount++;
   
-  // Ensure green LED stays on
-  digitalWrite(GREEN_LED, HIGH);
-  lastAlertTime = millis();
-  
-  Serial.println("GREEN LED status after benign detection: ON");
-  Serial.flush();
+  Serial.println("STATUS: BENIGN_DETECTED");
 }
 
-void handleRansomwareDetection() {
-  Serial.println("ALERT: RANSOMWARE DETECTED!");
-  Serial.flush();
-  clearAllAlerts();
+void handleMaliciousDetection() {
+  stopAllAlerts(); // Stop any current activity
   
-  // Critical ransomware alert sequence
-  playRansomwareAlert();
+  state.redLedActive = true;
+  state.greenLedActive = false;
+  state.ledStartTime = millis();
   
-  // Keep red LED on and buzzer sounding
-  digitalWrite(RED_LED, HIGH);
-  tone(BUZZER, 800); // Persistent warning tone
-  lastAlertTime = millis();
+  startMaliciousSound();
+  stats.maliciousCount++;
+  
+  Serial.println("STATUS: MALICIOUS_DETECTED");
 }
 
-void handleBatchMalicious(String command) {
-  Serial.println("BATCH ALERT: Malicious files detected in batch");
-  Serial.flush();
-  clearAllAlerts();
-  
-  int colonIndex = command.indexOf(':');
-  String countInfo = command.substring(colonIndex + 1);
-  Serial.println("Batch result: " + countInfo);
-  Serial.flush();
-  
-  // Multiple threat alert sequence
-  playBatchMaliciousAlert();
-  
-  // Final sustained alert
-  digitalWrite(RED_LED, HIGH);
-  tone(BUZZER, 900); // Higher pitch for batch threats
-  lastAlertTime = millis();
+void startBenignSound() {
+  state.soundPlaying = true;
+  state.isBenignSequence = true;
+  state.currentNote = 0;
+  state.noteStartTime = millis();
 }
 
-void handleBatchClean() {
-  Serial.println("BATCH COMPLETE: All files clean - GREEN LED ON");
-  Serial.flush();
-  clearAllAlerts();
-  
-  // Visual indicator with success melody
-  for (int i = 0; i < 3; i++) {
-    digitalWrite(GREEN_LED, HIGH);
-    Serial.println("GREEN LED flash ON");
-    delay(150);
-    digitalWrite(GREEN_LED, LOW);
-    Serial.println("GREEN LED flash OFF");
-    delay(100);
+void startMaliciousSound() {
+  state.soundPlaying = true;
+  state.isBenignSequence = false;
+  state.currentNote = 0;
+  state.noteStartTime = millis();
+}
+
+void updateLEDs(unsigned long currentTime) {
+  // Handle LED timeouts
+  if ((state.greenLedActive || state.redLedActive) && 
+      (currentTime - state.ledStartTime >= LED_DURATION)) {
+    state.greenLedActive = false;
+    state.redLedActive = false;
   }
   
-  // Play all-clear confirmation
-  playBatchCleanSound();
-  
-  // Keep green LED on
-  digitalWrite(GREEN_LED, HIGH);
-  Serial.println("GREEN LED final state: ON");
-  lastAlertTime = millis();
-  Serial.flush();
+  // Update LED states
+  digitalWrite(GREEN_LED_PIN, state.greenLedActive ? HIGH : LOW);
+  digitalWrite(RED_LED_PIN, state.redLedActive ? HIGH : LOW);
 }
 
-void handleStatusRequest() {
-  Serial.println("Arduino Status: READY");
-  Serial.print("Green LED (Pin 3): ");
-  Serial.println(digitalRead(GREEN_LED) ? "ON" : "OFF");
-  Serial.print("Red LED (Pin 8): ");
-  Serial.println(digitalRead(RED_LED) ? "ON" : "OFF");
-  Serial.print("Buzzer (Pin 13): ");
-  Serial.println("Ready");
-  Serial.flush();
-}
-
-void handleReset() {
-  Serial.println("Resetting system...");
-  Serial.flush();
-  clearAllAlerts();
-  lastAlertTime = 0;
-  startupSequence();
-  Serial.println("System reset complete");
-  Serial.flush();
-}
-
-void handleAlertTimeout() {
-  unsigned long currentTime = millis();
-  unsigned long duration = ALERT_DURATION;
-  
-  // Use longer duration for red LED (malicious) alerts
-  if (digitalRead(RED_LED) == HIGH) {
-    duration = BATCH_ALERT_DURATION;
+void updateSoundPlayback(unsigned long currentTime) {
+  if (!state.soundPlaying) {
+    digitalWrite(BUZZER_PIN, LOW);
+    return;
   }
   
-  if (lastAlertTime > 0 && (currentTime - lastAlertTime > duration)) {
-    clearAllAlerts();
-    lastAlertTime = 0;
-    Serial.println("Alert timeout - clearing all indicators");
-    Serial.flush();
+  const int* notes;
+  const int* durations;
+  int noteCount;
+  
+  // Select appropriate sound sequence
+  if (state.isBenignSequence) {
+    notes = BENIGN_NOTES;
+    durations = BENIGN_DURATIONS;
+    noteCount = BENIGN_NOTE_COUNT;
+  } else {
+    notes = MALICIOUS_NOTES;
+    durations = MALICIOUS_DURATIONS;
+    noteCount = MALICIOUS_NOTE_COUNT;
   }
-}
-
-void clearAllAlerts() {
-  digitalWrite(GREEN_LED, LOW);
-  digitalWrite(RED_LED, LOW);
-  noTone(BUZZER);
-}
-
-void playSafeFileSound() {
-  // Two gentle confirmation beeps for safe files
-  tone(BUZZER, 400);  // Low, reassuring tone
-  delay(150);
-  noTone(BUZZER);
-  delay(100);
-  tone(BUZZER, 500);  // Slightly higher confirmation
-  delay(200);
-  noTone(BUZZER);
-}
-
-void playRansomwareAlert() {
-  // Critical security alert pattern - urgent and attention-grabbing
-  for (int cycle = 0; cycle < 4; cycle++) {
-    // Rapid high-pitched alarm bursts
-    for (int burst = 0; burst < 3; burst++) {
-      digitalWrite(RED_LED, HIGH);
-      tone(BUZZER, 1500); // High urgency tone
-      delay(150);
-      digitalWrite(RED_LED, LOW);
-      noTone(BUZZER);
-      delay(50);
+  
+  // Check if current note should end
+  if (currentTime - state.noteStartTime >= durations[state.currentNote]) {
+    state.currentNote++;
+    
+    // Check if sequence is complete
+    if (state.currentNote >= noteCount) {
+      state.soundPlaying = false;
+      digitalWrite(BUZZER_PIN, LOW);
+      return;
     }
     
-    // Brief pause between cycles
-    delay(200);
-    
-    // Secondary warning tone
-    digitalWrite(RED_LED, HIGH);
-    tone(BUZZER, 1000); // Lower warning tone
-    delay(300);
-    digitalWrite(RED_LED, LOW);
-    noTone(BUZZER);
-    delay(150);
+    state.noteStartTime = currentTime;
+  }
+  
+  // Play current note
+  int currentFreq = notes[state.currentNote];
+  if (currentFreq > 0) {
+    tone(BUZZER_PIN, currentFreq);
+  } else {
+    digitalWrite(BUZZER_PIN, LOW); // Rest/pause
   }
 }
 
-void playBatchMaliciousAlert() {
-  // Escalating threat level alert for multiple malicious files
-  digitalWrite(RED_LED, HIGH);
+void performConnectionTest() {
+  Serial.println("STATUS: CONNECTION_TEST_START");
   
-  // Siren-like warning pattern
-  for (int sweep = 0; sweep < 3; sweep++) {
-    // Rising siren
-    for (int freq = 600; freq <= 1200; freq += 50) {
-      tone(BUZZER, freq);
-      delay(30);
-    }
-    // Falling siren
-    for (int freq = 1200; freq >= 600; freq -= 50) {
-      tone(BUZZER, freq);
-      delay(30);
-    }
-  }
+  // Quick test sequence to confirm hardware after connection
+  stopAllAlerts();
   
-  digitalWrite(RED_LED, LOW);
-  noTone(BUZZER);
-  delay(200);
-  
-  // Final urgent pulses
-  for (int pulse = 0; pulse < 5; pulse++) {
-    digitalWrite(RED_LED, HIGH);
-    tone(BUZZER, 1400);
-    delay(100);
-    digitalWrite(RED_LED, LOW);
-    noTone(BUZZER);
-    delay(100);
-  }
-}
-
-void playBatchCleanSound() {
-  // Professional "all clear" confirmation sequence
-  // Three descending tones indicating security cleared
-  tone(BUZZER, 800);
-  delay(200);
-  noTone(BUZZER);
+  // Green LED test
+  digitalWrite(GREEN_LED_PIN, HIGH);
+  delay(300);
+  digitalWrite(GREEN_LED_PIN, LOW);
   delay(100);
   
-  tone(BUZZER, 600);
+  // Red LED test  
+  digitalWrite(RED_LED_PIN, HIGH);
+  delay(300);
+  digitalWrite(RED_LED_PIN, LOW);
+  delay(100);
+  
+  // Quick beep confirmation
+  tone(BUZZER_PIN, 1000, 200);
   delay(250);
-  noTone(BUZZER);
-  delay(100);
   
-  tone(BUZZER, 450);
-  delay(400);
-  noTone(BUZZER);
-  delay(200);
-  
-  // Final confirmation beep
-  tone(BUZZER, 500);
-  delay(150);
-  noTone(BUZZER);
+  Serial.println("STATUS: CONNECTION_TEST_COMPLETE");
+  Serial.println("System ready for ransomware detection!");
 }
 
-void startupSequence() {
-  Serial.println("Starting system check...");
-  Serial.flush();
+void performSystemTest() {
+  Serial.println("STATUS: SYSTEM_TEST_START");
   
-  // System initialization sound
-  tone(BUZZER, 600);
-  delay(200);
-  tone(BUZZER, 800);
-  delay(200);
-  noTone(BUZZER);
+  // Test sequence: Green -> Red -> Sound test
+  stopAllAlerts();
   
   // Test green LED
-  Serial.println("Testing GREEN LED (Pin 3)...");
-  digitalWrite(GREEN_LED, HIGH);
-  delay(1000);  // Longer delay to see it clearly
-  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(GREEN_LED_PIN, HIGH);
+  delay(500);
+  digitalWrite(GREEN_LED_PIN, LOW);
+  delay(200);
   
   // Test red LED
-  Serial.println("Testing RED LED (Pin 8)...");
-  digitalWrite(RED_LED, HIGH);
-  delay(1000);
-  digitalWrite(RED_LED, LOW);
+  digitalWrite(RED_LED_PIN, HIGH);
+  delay(500);
+  digitalWrite(RED_LED_PIN, LOW);
+  delay(200);
   
-  // Test buzzer with security system ready tone
-  Serial.println("Testing BUZZER (Pin 13)...");
-  tone(BUZZER, 1000);
-  delay(150);
-  noTone(BUZZER);
-  delay(100);
-  tone(BUZZER, 1200);
-  delay(150);
-  noTone(BUZZER);
-  delay(100);
-  tone(BUZZER, 800);
+  // Test benign sound
+  startBenignSound();
+  delay(1000); // Let it play for a bit
+  
+  // Test malicious sound
+  startMaliciousSound();
+  delay(1500); // Let it play for a bit
+  
+  stopAllAlerts();
+  Serial.println("STATUS: SYSTEM_TEST_COMPLETE");
+}
+
+void performStartupSequence() {
+  Serial.println("STATUS: STARTUP_SEQUENCE");
+  
+  // LED sweep
+  digitalWrite(GREEN_LED_PIN, HIGH);
   delay(300);
-  noTone(BUZZER);
+  digitalWrite(RED_LED_PIN, HIGH);
+  delay(300);
+  digitalWrite(GREEN_LED_PIN, LOW);
+  delay(300);
+  digitalWrite(RED_LED_PIN, LOW);
   
-  Serial.println("System check complete - Ready for detection");
-  Serial.flush();
+  // Startup chime
+  tone(BUZZER_PIN, 523, 150); // C5
+  delay(200);
+  tone(BUZZER_PIN, 659, 150); // E5
+  delay(200);
+  tone(BUZZER_PIN, 784, 300); // G5
+  delay(350);
+  
+  digitalWrite(BUZZER_PIN, LOW);
+}
+
+void sendHeartbeat(unsigned long currentTime) {
+  if (currentTime - state.lastHeartbeat >= HEARTBEAT_INTERVAL) {
+    Serial.println("HEARTBEAT");
+    state.lastHeartbeat = currentTime;
+  }
+}
+
+void sendSystemStatus() {
+  Serial.println("=== SYSTEM STATUS ===");
+  Serial.print("Connection: ");
+  Serial.println(state.connectionEstablished ? "ESTABLISHED" : "WAITING");
+  Serial.print("Uptime: ");
+  Serial.print(stats.systemUptime / 1000);
+  Serial.println(" seconds");
+  Serial.print("Total Commands: ");
+  Serial.println(stats.totalCommands);
+  Serial.print("Benign Detections: ");
+  Serial.println(stats.benignCount);
+  Serial.print("Malicious Detections: ");
+  Serial.println(stats.maliciousCount);
+  Serial.print("Green LED: ");
+  Serial.println(state.greenLedActive ? "ON" : "OFF");
+  Serial.print("Red LED: ");
+  Serial.println(state.redLedActive ? "ON" : "OFF");
+  Serial.print("Sound Playing: ");
+  Serial.println(state.soundPlaying ? "YES" : "NO");
+  Serial.print("Last Activity: ");
+  Serial.print((millis() - state.lastActivity) / 1000);
+  Serial.println(" seconds ago");
+  Serial.println("===================");
+}
+
+void resetSystem() {
+  Serial.println("STATUS: SYSTEM_RESET");
+  
+  // Reset all states
+  stopAllAlerts();
+  
+  // Reset connection state
+  state.connectionEstablished = false;
+  
+  // Reset statistics
+  stats.benignCount = 0;
+  stats.maliciousCount = 0;
+  stats.totalCommands = 0;
+  stats.lastResetTime = millis();
+  
+  // Clear input buffer
+  state.inputBuffer = "";
+  state.lastActivity = millis();
+  
+  // Confirmation sequence
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    digitalWrite(RED_LED_PIN, HIGH);
+    tone(BUZZER_PIN, 440, 100);
+    delay(150);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    digitalWrite(RED_LED_PIN, LOW);
+    digitalWrite(BUZZER_PIN, LOW);
+    delay(150);
+  }
+  
+  Serial.println("STATUS: RESET_COMPLETE");
+  Serial.println("Waiting for connection...");
+}
+
+void stopAllAlerts() {
+  state.greenLedActive = false;
+  state.redLedActive = false;
+  state.soundPlaying = false;
+  
+  digitalWrite(GREEN_LED_PIN, LOW);
+  digitalWrite(RED_LED_PIN, LOW);
+  digitalWrite(BUZZER_PIN, LOW);
 }

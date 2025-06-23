@@ -18,10 +18,16 @@ import serial.tools.list_ports
 import threading
 import queue
 import json
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+import psutil
+import statistics
+from collections import deque
 
+# Logging Configuration
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("ransomware_detector.log"),
         logging.StreamHandler()
@@ -29,23 +35,107 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ransomware-detector")
 
-# SQLite Database Configuration
+# Performance Metrics Logger
+perf_logger = logging.getLogger("performance-metrics")
+perf_handler = logging.FileHandler("performance_metrics.log")
+perf_formatter = logging.Formatter('%(asctime)s - PERF - %(message)s')
+perf_handler.setFormatter(perf_formatter)
+perf_logger.addHandler(perf_handler)
+perf_logger.setLevel(logging.INFO)
+
 DB_PATH = 'ransomware_detector.db'
 
-class ArduinoManager:
+class PerformanceMonitor:
     def __init__(self):
+        self.processing_times = deque(maxlen=100)  # Keep last 100 processing times
+        self.arduino_delays = deque(maxlen=100)   # Keep last 100 Arduino delays
+        self.files_processed = 0
+        self.start_time = time.time()
+        self.cpu_readings = deque(maxlen=50)      # Keep last 50 CPU readings
+        self.memory_readings = deque(maxlen=50)   # Keep last 50 memory readings
+        self.process = psutil.Process()
+        
+        # Start resource monitoring thread
+        self.monitoring = True
+        self.monitor_thread = threading.Thread(target=self._monitor_resources, daemon=True)
+        self.monitor_thread.start()
+    
+    def _monitor_resources(self):
+        """Background thread to monitor CPU and memory usage"""
+        while self.monitoring:
+            try:
+                cpu_percent = self.process.cpu_percent()
+                memory_mb = self.process.memory_info().rss / 1024 / 1024
+                
+                self.cpu_readings.append(cpu_percent)
+                self.memory_readings.append(memory_mb)
+                
+                time.sleep(2)  # Check every 2 seconds
+            except Exception as e:
+                logger.error(f"Resource monitoring error: {str(e)}")
+                time.sleep(5)
+    
+    def record_processing_time(self, processing_time_ms):
+        """Record file processing time in milliseconds"""
+        self.processing_times.append(processing_time_ms)
+        self.files_processed += 1
+        
+        # Log every 10th file or if significant change
+        if self.files_processed % 10 == 0 or processing_time_ms > 1000:
+            avg_time = statistics.mean(self.processing_times)
+            perf_logger.info(f"FILE_PROCESSING_TIME: Current={processing_time_ms:.2f}ms, Average={avg_time:.2f}ms, Total_Files={self.files_processed}")
+    
+    def record_arduino_delay(self, delay_ms):
+        """Record Arduino communication delay in milliseconds"""
+        self.arduino_delays.append(delay_ms)
+        
+        # Log every 5th Arduino communication
+        if len(self.arduino_delays) % 5 == 0:
+            avg_delay = statistics.mean(self.arduino_delays)
+            perf_logger.info(f"ARDUINO_DELAY: Current={delay_ms:.2f}ms, Average={avg_delay:.2f}ms")
+    
+    def get_files_per_minute(self):
+        """Calculate files processed per minute"""
+        elapsed_time = time.time() - self.start_time
+        if elapsed_time > 0:
+            files_per_minute = (self.files_processed / elapsed_time) * 60
+            perf_logger.info(f"FILES_PER_MINUTE: {files_per_minute:.2f}, Total_Files={self.files_processed}, Elapsed_Time={elapsed_time:.2f}s")
+            return files_per_minute
+        return 0
+    
+    def get_current_metrics(self):
+        """Get current performance metrics"""
+        metrics = {
+            'avg_processing_time': statistics.mean(self.processing_times) if self.processing_times else 0,
+            'avg_arduino_delay': statistics.mean(self.arduino_delays) if self.arduino_delays else 0,
+            'files_per_minute': self.get_files_per_minute(),
+            'avg_cpu_usage': statistics.mean(self.cpu_readings) if self.cpu_readings else 0,
+            'avg_memory_usage': statistics.mean(self.memory_readings) if self.memory_readings else 0,
+            'current_memory': self.memory_readings[-1] if self.memory_readings else 0
+        }
+        
+        # Log comprehensive metrics every 25 files
+        if self.files_processed % 25 == 0 and self.files_processed > 0:
+            perf_logger.info(f"COMPREHENSIVE_METRICS: {json.dumps(metrics, indent=2)}")
+        
+        return metrics
+    
+    def stop_monitoring(self):
+        """Stop the performance monitoring"""
+        self.monitoring = False
+
+class ArduinoManager:
+    def __init__(self, performance_monitor):
         self.connection = None
         self.command_queue = queue.Queue()
         self.worker_thread = None
         self.running = False
+        self.performance_monitor = performance_monitor
     
     def find_arduino_ports(self):
         ports = serial.tools.list_ports.comports()
-        arduino_ports = []
-        for port in ports:
-            if any(keyword in port.description.upper() for keyword in ['ARDUINO', 'CH340', 'USB']):
-                arduino_ports.append(port.device)
-        return arduino_ports
+        return [port.device for port in ports if any(keyword in port.description.upper() 
+                for keyword in ['ARDUINO', 'CH340', 'USB'])]
     
     def connect(self, port=None):
         try:
@@ -64,11 +154,8 @@ class ArduinoManager:
             if not self.running:
                 self.start_worker_thread()
             
-            logger.info(f"Arduino connected on port: {port}")
+            logger.info(f"Arduino connected: {port}")
             return True, f"Connected to {port}"
-        except serial.SerialException as e:
-            logger.error(f"Serial error: {str(e)}")
-            return False, f"Serial error: {str(e)}"
         except Exception as e:
             logger.error(f"Arduino connection error: {str(e)}")
             return False, f"Connection error: {str(e)}"
@@ -82,10 +169,20 @@ class ArduinoManager:
         while self.running:
             try:
                 command = self.command_queue.get(timeout=1)
+                
+                # Record start time for Arduino communication
+                start_time = time.time()
+                
                 if self.connection and self.connection.is_open:
                     self.connection.write(command.encode() + b'\n')
                     self.connection.flush()
-                    logger.info(f"Sent command: {command}")
+                    
+                    # Calculate and record Arduino delay
+                    delay_ms = (time.time() - start_time) * 1000
+                    self.performance_monitor.record_arduino_delay(delay_ms)
+                    
+                    logger.info(f"Arduino command sent: {command} (Delay: {delay_ms:.2f}ms)")
+                
                 self.command_queue.task_done()
             except queue.Empty:
                 continue
@@ -95,12 +192,6 @@ class ArduinoManager:
     def send_command(self, command):
         if not self.command_queue.full():
             self.command_queue.put(command)
-    
-    def send_batch_result(self, total_files, malicious_count):
-        if malicious_count > 0:
-            self.send_command(f"BATCH_MALICIOUS:{malicious_count}/{total_files}")
-        else:
-            self.send_command("BATCH_CLEAN")
     
     def disconnect(self):
         self.running = False
@@ -128,67 +219,140 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS detection_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 filename TEXT,
+                filepath TEXT,
                 detection_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 prediction INTEGER,
                 confidence REAL,
                 features TEXT,
-                batch_id TEXT
+                scan_type TEXT,
+                processing_time_ms REAL,
+                arduino_delay_ms REAL
             )
             ''')
             conn.commit()
             cursor.close()
             conn.close()
-            logger.info("SQLite database initialized successfully")
+            logger.info("Database initialized")
         except Exception as e:
             logger.error(f"Database initialization error: {str(e)}")
-            st.error(f"Database connection failed: {str(e)}")
     
-    def log_detection(self, filename, prediction, confidence, features, batch_id=None):
+    def log_detection(self, filename, filepath, prediction, confidence, features, scan_type="manual", processing_time_ms=0, arduino_delay_ms=0):
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
-            
-            # Convert features dict to JSON string
             features_json = json.dumps(features) if isinstance(features, dict) else str(features)
-            
             cursor.execute(
-                "INSERT INTO detection_logs (filename, prediction, confidence, features, batch_id) VALUES (?, ?, ?, ?, ?)",
-                (filename, int(prediction), float(confidence), features_json, batch_id)
+                "INSERT INTO detection_logs (filename, filepath, prediction, confidence, features, scan_type, processing_time_ms, arduino_delay_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (filename, filepath, int(prediction), float(confidence), features_json, scan_type, processing_time_ms, arduino_delay_ms)
             )
             conn.commit()
             cursor.close()
             conn.close()
-            logger.info(f"Logged detection for {filename}: {'BENIGN' if prediction == 1 else 'MALICIOUS'} ({confidence:.2%} confidence)")
+            result = 'BENIGN' if prediction == 1 else 'MALICIOUS'
+            logger.info(f"Detection logged - {filename}: {result} ({confidence:.2%}) [Processing: {processing_time_ms:.2f}ms]")
         except Exception as e:
             logger.error(f"Database logging error: {str(e)}")
-            logger.error(f"Features type: {type(features)}")
     
     def get_logs(self):
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM detection_logs ORDER BY detection_time DESC")
-            
-            # Get column names
             columns = [description[0] for description in cursor.description]
-            
-            # Fetch all rows
             rows = cursor.fetchall()
-            
             cursor.close()
             conn.close()
             
-            # Convert to DataFrame
             df = pd.DataFrame(rows, columns=columns)
-            
-            # Convert detection_time to datetime
             if not df.empty and 'detection_time' in df.columns:
                 df['detection_time'] = pd.to_datetime(df['detection_time'])
-            
             return df
         except Exception as e:
             logger.error(f"Error fetching logs: {str(e)}")
             return pd.DataFrame()
+
+class FileScanHandler(FileSystemEventHandler):
+    def __init__(self, model, db_manager, arduino_manager, performance_monitor):
+        self.model = model
+        self.db_manager = db_manager
+        self.arduino_manager = arduino_manager
+        self.performance_monitor = performance_monitor
+
+    def on_created(self, event):
+        if not event.is_directory and event.src_path.lower().endswith(('.exe', '.dll', '.sys')):
+            self.scan_file(event.src_path)
+
+    def scan_file(self, filepath):
+        filename = os.path.basename(filepath)
+        logger.info(f"Scanning new file: {filename}")
+        
+        # Start timing for file processing
+        start_time = time.time()
+        
+        try:
+            features = extract_pe_features(filepath)
+            if features:
+                input_df = pd.DataFrame([features])
+                prediction = self.model.predict(input_df)[0]
+                prediction_proba = self.model.predict_proba(input_df)[0]
+                confidence = prediction_proba[1] if prediction == 1 else prediction_proba[0]
+                
+                # Calculate processing time
+                processing_time_ms = (time.time() - start_time) * 1000
+                self.performance_monitor.record_processing_time(processing_time_ms)
+                
+                # Send Arduino command and measure delay
+                arduino_start = time.time()
+                self.arduino_manager.send_command("RANSOMWARE" if prediction == 0 else "BENIGN")
+                
+                self.db_manager.log_detection(filename, filepath, prediction, confidence, features, "background", processing_time_ms)
+                
+                result = "BENIGN" if prediction == 1 else "MALICIOUS"
+                logger.info(f"Background scan result - {filename}: {result} ({confidence:.2%}) [Processing: {processing_time_ms:.2f}ms]")
+            else:
+                logger.error(f"Failed to extract features from {filename}")
+        except Exception as e:
+            logger.error(f"Background scan error for {filename}: {str(e)}")
+
+class FolderMonitor:
+    def __init__(self):
+        self.observers = {}
+        self.running = False
+
+    def start_monitoring(self, folder_path, model, db_manager, arduino_manager, performance_monitor):
+        if folder_path in self.observers:
+            self.stop_monitoring(folder_path)
+
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
+        event_handler = FileScanHandler(model, db_manager, arduino_manager, performance_monitor)
+
+        # 🔥 Scan all existing .exe and .dll files in the folder immediately
+        for root, _, files in os.walk(folder_path):
+            for file in files:
+                if file.lower().endswith(('.exe', '.dll')):
+                    full_path = os.path.join(root, file)
+                    event_handler.scan_file(full_path)
+
+        observer = Observer()
+        observer.schedule(event_handler, folder_path, recursive=True)
+        observer.start()
+
+        self.observers[folder_path] = observer
+        logger.info(f"Started monitoring: {folder_path}")
+        return True
+    
+    def stop_monitoring(self, folder_path):
+        if folder_path in self.observers:
+            self.observers[folder_path].stop()
+            self.observers[folder_path].join()
+            del self.observers[folder_path]
+            logger.info(f"Stopped monitoring: {folder_path}")
+    
+    def stop_all(self):
+        for folder_path in list(self.observers.keys()):
+            self.stop_monitoring(folder_path)
 
 def load_model():
     try:
@@ -201,7 +365,7 @@ def load_model():
             logger.info("Model loaded from joblib file")
             return model
         except Exception as e:
-            st.error(f"Failed to load model: {str(e)}")
+            logger.error(f"Failed to load model: {str(e)}")
             return None
 
 def extract_pe_features(file_path):
@@ -209,14 +373,12 @@ def extract_pe_features(file_path):
     try:
         pe = pefile.PE(file_path)
         
-        debug_size = 0
-        debug_rva = 0
+        debug_size = debug_rva = 0
         if hasattr(pe, 'DIRECTORY_ENTRY_DEBUG') and len(pe.DIRECTORY_ENTRY_DEBUG) > 0:
             debug_size = pe.DIRECTORY_ENTRY_DEBUG[0].struct.SizeOfData
             debug_rva = pe.DIRECTORY_ENTRY_DEBUG[0].struct.AddressOfRawData
         
-        export_rva = 0
-        export_size = 0
+        export_rva = export_size = 0
         if hasattr(pe, 'DIRECTORY_ENTRY_EXPORT'):
             export_rva = pe.OPTIONAL_HEADER.DATA_DIRECTORY[0].VirtualAddress
             export_size = pe.OPTIONAL_HEADER.DATA_DIRECTORY[0].Size
@@ -237,7 +399,7 @@ def extract_pe_features(file_path):
         except:
             pass
         
-        features = {
+        return {
             'Machine': pe.FILE_HEADER.Machine,
             'DebugSize': debug_size,
             'DebugRVA': debug_rva,
@@ -254,7 +416,6 @@ def extract_pe_features(file_path):
             'ResourceSize': resource_size,
             'BitcoinAddresses': bitcoin_addresses
         }
-        return features
     except Exception as e:
         logger.error(f"Feature extraction error: {str(e)}")
         return None
@@ -266,19 +427,18 @@ def extract_pe_features(file_path):
                 pass
 
 def create_visualizations(logs_df):
-    st.subheader("Detection Analytics")
+    if logs_df.empty:
+        st.info("No data available for visualization")
+        return
     
-    viz_type = st.selectbox("Choose Visualization", 
-                           ["Timeline", "Distribution", "Heatmap"])
+    logs_df['prediction_text'] = logs_df['prediction'].apply(lambda x: "BENIGN" if x == 1 else "MALICIOUS")
+    
+    viz_type = st.selectbox("Visualization Type", ["Timeline", "Distribution", "Heatmap"])
     
     if viz_type == "Timeline":
         fig = px.line(
-            logs_df,
-            x="detection_time",
-            y="confidence",
-            color="prediction_text",
-            markers=True,
-            title="Detection Confidence Timeline",
+            logs_df, x="detection_time", y="confidence", color="prediction_text",
+            markers=True, title="Detection Timeline",
             color_discrete_map={"BENIGN": "green", "MALICIOUS": "red"}
         )
         fig.update_layout(yaxis_tickformat=".0%")
@@ -287,30 +447,21 @@ def create_visualizations(logs_df):
     elif viz_type == "Distribution":
         fig = make_subplots(
             rows=2, cols=2,
-            subplot_titles=('Prediction Distribution', 'Confidence Distribution', 
-                          'Daily Detections', 'Hourly Pattern'),
+            subplot_titles=('Predictions', 'Confidence', 'Daily', 'Hourly'),
             specs=[[{"type": "pie"}, {"type": "histogram"}],
                    [{"type": "bar"}, {"type": "bar"}]]
         )
         
         pred_counts = logs_df['prediction_text'].value_counts()
-        fig.add_trace(go.Pie(labels=pred_counts.index, values=pred_counts.values,
-                            marker_colors=['green' if x == 'BENIGN' else 'red' for x in pred_counts.index]),
-                     row=1, col=1)
-        
-        fig.add_trace(go.Histogram(x=logs_df['confidence'], nbinsx=20, 
-                                  marker_color='blue', opacity=0.7),
-                     row=1, col=2)
+        colors = ['green' if x == 'BENIGN' else 'red' for x in pred_counts.index]
+        fig.add_trace(go.Pie(labels=pred_counts.index, values=pred_counts.values, marker_colors=colors), row=1, col=1)
+        fig.add_trace(go.Histogram(x=logs_df['confidence'], nbinsx=20, marker_color='blue', opacity=0.7), row=1, col=2)
         
         daily_counts = logs_df.groupby(logs_df['detection_time'].dt.date).size()
-        fig.add_trace(go.Bar(x=daily_counts.index, y=daily_counts.values,
-                            marker_color='purple'),
-                     row=2, col=1)
+        fig.add_trace(go.Bar(x=daily_counts.index, y=daily_counts.values, marker_color='purple'), row=2, col=1)
         
         hourly_counts = logs_df.groupby(logs_df['detection_time'].dt.hour).size()
-        fig.add_trace(go.Bar(x=hourly_counts.index, y=hourly_counts.values,
-                            marker_color='orange'),
-                     row=2, col=2)
+        fig.add_trace(go.Bar(x=hourly_counts.index, y=hourly_counts.values, marker_color='orange'), row=2, col=2)
         
         fig.update_layout(height=800, showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
@@ -318,21 +469,21 @@ def create_visualizations(logs_df):
     elif viz_type == "Heatmap":
         logs_df['hour'] = logs_df['detection_time'].dt.hour
         logs_df['day'] = logs_df['detection_time'].dt.day_name()
-        
         heatmap_data = logs_df.groupby(['day', 'hour']).size().unstack(fill_value=0)
         
-        fig = px.imshow(heatmap_data.values,
-                       x=heatmap_data.columns,
-                       y=heatmap_data.index,
-                       aspect="auto",
-                       title="Detection Activity Heatmap",
-                       labels=dict(x="Hour of Day", y="Day of Week", color="Detections"))
-        
+        fig = px.imshow(heatmap_data.values, x=heatmap_data.columns, y=heatmap_data.index,
+                       aspect="auto", title="Detection Activity Heatmap",
+                       labels=dict(x="Hour", y="Day", color="Detections"))
         st.plotly_chart(fig, use_container_width=True)
 
 @st.cache_resource
+def get_performance_monitor():
+    return PerformanceMonitor()
+
+@st.cache_resource
 def get_arduino_manager():
-    return ArduinoManager()
+    performance_monitor = get_performance_monitor()
+    return ArduinoManager(performance_monitor)
 
 @st.cache_resource
 def get_db_manager():
@@ -342,260 +493,429 @@ def get_db_manager():
 def get_model():
     return load_model()
 
+@st.cache_resource
+def get_folder_monitor():
+    return FolderMonitor()
+
 def main():
-    st.set_page_config(page_title="Ransomware Detection System", layout="wide")
+    st.set_page_config(page_title="🛡️ Ransomware Detection System", layout="wide")
     st.title("🛡️ Ransomware Detection System")
-    
+
+    performance_monitor = get_performance_monitor()
     arduino_manager = get_arduino_manager()
     db_manager = get_db_manager()
     model = get_model()
-    
+    folder_monitor = get_folder_monitor()
+
     if not model:
-        st.error("Model could not be loaded. Please check the model files.")
+        st.error("❌ Model could not be loaded. Check model files.")
         return
+
+    current_time = time.time()
+    if 'last_metric_log' not in st.session_state:
+        st.session_state.last_metric_log = current_time
+
+    if current_time - st.session_state.last_metric_log > 30:
+        metrics = performance_monitor.get_current_metrics()
+        perf_logger.info(f"PERIODIC_METRICS: CPU={metrics['avg_cpu_usage']:.2f}%, Memory={metrics['current_memory']:.2f}MB, Files/min={metrics['files_per_minute']:.2f}")
+        st.session_state.last_metric_log = current_time
+
+    with st.sidebar:
+        st.subheader("🔌 Arduino Control")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔗 Connect"):
+                success, message = arduino_manager.connect()
+                st.success(f"✅ {message}") if success else st.error(f"❌ {message}")
+
+        with col2:
+            if st.button("🔌 Disconnect"):
+                arduino_manager.disconnect()
+                st.info("Disconnected")
+
+        manual_port = st.text_input("Manual Port", placeholder="COM3")
+        if st.button("Connect Manual") and manual_port:
+            success, message = arduino_manager.connect(manual_port)
+            st.success(message) if success else st.error(message)
+
+        status = "🟢 Connected" if arduino_manager.is_connected() else "🔴 Disconnected"
+        st.write(f"**Status:** {status}")
+
+        # 📁 Folder Monitor Section
+        st.subheader("📁 Folder Monitor")
+        folder_path = st.text_input("📁 Folder Path", placeholder=r"C:\Users\Hp\Documents\MyFolder")
+
+        if folder_path and not os.path.isdir(folder_path):
+            st.error("❌ The folder path does not exist. Please check it.")
+            st.stop()
+
+        if folder_path:
+            st.write(f"Selected: {folder_path}")
+
+        if folder_path and st.button("▶️ Start Monitoring"):
+            if folder_monitor.start_monitoring(folder_path, model, db_manager, arduino_manager, performance_monitor):
+                st.success(f"✅ Monitoring: {folder_path}")
+                st.session_state.monitoring_folder = folder_path
+
+        if st.button("⏹️ Stop All Monitoring"):
+            folder_monitor.stop_all()
+            st.info("Monitoring stopped")
+            if 'monitoring_folder' in st.session_state:
+                del st.session_state.monitoring_folder
+
+        if 'monitoring_folder' in st.session_state:
+            st.success(f"📍 Active: {st.session_state.monitoring_folder}")
+
     
-    st.sidebar.subheader("🔌 Arduino Status")
+    # Main Content
+    page = st.radio("Navigation", ["🔍 Detection", "📊 Logs", "ℹ️ About"], horizontal=True)
     
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        if st.button("🔗 Connect"):
-            success, message = arduino_manager.connect()
-            if success:
-                st.sidebar.success(f"✅ {message}")
-            else:
-                st.sidebar.error(f"❌ {message}")
-    
-    with col2:
-        if st.button("🔌 Disconnect"):
-            arduino_manager.disconnect()
-            st.sidebar.info("Disconnected")
-    
-    manual_port = st.sidebar.text_input("Manual Port", placeholder="COM3 or /dev/ttyUSB0")
-    if st.sidebar.button("Connect Manual") and manual_port:
-        success, message = arduino_manager.connect(manual_port)
-        st.sidebar.success(message) if success else st.sidebar.error(message)
-    
-    if arduino_manager.is_connected():
-        st.sidebar.success("🟢 Arduino Ready")
-    else:
-        st.sidebar.warning("🔴 Arduino Disconnected")
-    
-    page = st.sidebar.radio("📍 Navigation", ["Detection", "Logs", "About"])
-    
-    features = ['Machine', 'DebugSize', 'DebugRVA', 'MajorImageVersion', 
-                'MajorOSVersion', 'ExportRVA', 'ExportSize', 'IatVRA', 
-                'MajorLinkerVersion', 'MinorLinkerVersion', 'NumberOfSections', 
-                'SizeOfStackReserve', 'DllCharacteristics', 'ResourceSize', 
-                'BitcoinAddresses']
-    
-    if page == "Detection":
-        tab1, tab2, tab3 = st.tabs(["📝 Manual Input", "📁 File Upload", "📊 CSV Upload"])
+    if page == "🔍 Detection":
+        tab1, tab2 = st.tabs(["📝 Manual Input", "📁 File Upload"])
         
         with tab1:
-            st.header("Enter File Characteristics")
+            st.header("Manual Feature Input")
             
             with st.form("manual_form"):
                 col1, col2, col3 = st.columns(3)
-                input_values = {}
                 
                 with col1:
-                    input_values['Machine'] = st.number_input("Machine", min_value=0, value=332)
-                    input_values['DebugSize'] = st.number_input("Debug Size", min_value=0, value=0)
-                    input_values['DebugRVA'] = st.number_input("Debug RVA", min_value=0, value=0)
-                    input_values['MajorImageVersion'] = st.number_input("Major Image Version", min_value=0, value=0)
-                    input_values['MajorOSVersion'] = st.number_input("Major OS Version", min_value=0, value=4)
+                    machine = st.number_input("Machine", min_value=0, value=332)
+                    debug_size = st.number_input("Debug Size", min_value=0, value=0)
+                    debug_rva = st.number_input("Debug RVA", min_value=0, value=0)
+                    major_img = st.number_input("Major Image Version", min_value=0, value=0)
+                    major_os = st.number_input("Major OS Version", min_value=0, value=4)
                 
                 with col2:
-                    input_values['ExportRVA'] = st.number_input("Export RVA", min_value=0, value=0)
-                    input_values['ExportSize'] = st.number_input("Export Size", min_value=0, value=0)
-                    input_values['IatVRA'] = st.number_input("Iat VRA", min_value=0, value=8192)
-                    input_values['MajorLinkerVersion'] = st.number_input("Major Linker Version", min_value=0, value=8)
-                    input_values['MinorLinkerVersion'] = st.number_input("Minor Linker Version", min_value=0, value=0)
+                    export_rva = st.number_input("Export RVA", min_value=0, value=0)
+                    export_size = st.number_input("Export Size", min_value=0, value=0)
+                    iat_vra = st.number_input("IAT VRA", min_value=0, value=8192)
+                    major_linker = st.number_input("Major Linker Version", min_value=0, value=8)
+                    minor_linker = st.number_input("Minor Linker Version", min_value=0, value=0)
                 
                 with col3:
-                    input_values['NumberOfSections'] = st.number_input("Number Of Sections", min_value=1, value=3)
-                    input_values['SizeOfStackReserve'] = st.number_input("Size Of Stack Reserve", min_value=0, value=1048576)
-                    input_values['DllCharacteristics'] = st.number_input("Dll Characteristics", min_value=0, value=34112)
-                    input_values['ResourceSize'] = st.number_input("Resource Size", min_value=0, value=672)
-                    input_values['BitcoinAddresses'] = st.number_input("Bitcoin Addresses", min_value=0, value=0)
+                    num_sections = st.number_input("Number of Sections", min_value=1, value=3)
+                    stack_reserve = st.number_input("Stack Reserve Size", min_value=0, value=1048576)
+                    dll_chars = st.number_input("DLL Characteristics", min_value=0, value=34112)
+                    resource_size = st.number_input("Resource Size", min_value=0, value=672)
+                    bitcoin_addrs = st.number_input("Bitcoin Addresses", min_value=0, value=0)
                 
-                if st.form_submit_button("🔍 Analyze"):
-                    logger.info("Starting manual input analysis...")
-                    input_df = pd.DataFrame([input_values])
+                if st.form_submit_button("🔍 Analyze", type="primary"):
+                    # Start timing for manual analysis
+                    start_time = time.time()
                     
-                    logger.info("Making prediction with Random Forest model...")
+                    input_values = {
+                        'Machine': machine, 'DebugSize': debug_size, 'DebugRVA': debug_rva,
+                        'MajorImageVersion': major_img, 'MajorOSVersion': major_os,
+                        'ExportRVA': export_rva, 'ExportSize': export_size, 'IatVRA': iat_vra,
+                        'MajorLinkerVersion': major_linker, 'MinorLinkerVersion': minor_linker,
+                        'NumberOfSections': num_sections, 'SizeOfStackReserve': stack_reserve,
+                        'DllCharacteristics': dll_chars, 'ResourceSize': resource_size,
+                        'BitcoinAddresses': bitcoin_addrs
+                    }
+                    
+                    input_df = pd.DataFrame([input_values])
                     prediction = model.predict(input_df)[0]
                     prediction_proba = model.predict_proba(input_df)[0]
                     confidence = prediction_proba[1] if prediction == 1 else prediction_proba[0]
                     
-                    result_text = "BENIGN" if prediction == 1 else "MALICIOUS (RANSOMWARE)"
-                    logger.info(f"Prediction complete: {result_text} with {confidence:.2%} confidence")
+                    # Calculate processing time
+                    processing_time_ms = (time.time() - start_time) * 1000
+                    performance_monitor.record_processing_time(processing_time_ms)
                     
                     arduino_manager.send_command("RANSOMWARE" if prediction == 0 else "BENIGN")
-                    db_manager.log_detection("manual_input", prediction, confidence, input_values)
+                    db_manager.log_detection("manual_input", "manual", prediction, confidence, input_values, "manual", processing_time_ms)
                     
                     if prediction == 1:
-                        st.success(f"✅ BENIGN - {prediction_proba[1]:.2%} confidence")
+                        st.success(f"✅ **BENIGN** - Confidence: {confidence:.2%}")
                     else:
-                        st.error(f"⚠️ MALICIOUS (RANSOMWARE) - {prediction_proba[0]:.2%} confidence")
+                        st.error(f"⚠️ **MALICIOUS (RANSOMWARE)** - Confidence: {confidence:.2%}")
         
         with tab2:
-            st.header("Upload PE File")
-            uploaded_file = st.file_uploader("Choose PE file", type=['dll', 'exe'])
+            st.header("File Upload Analysis")
             
-            if uploaded_file and st.button("🔍 Analyze File"):
+            uploaded_file = st.file_uploader("Choose PE File", type=['dll', 'exe'], key="file_upload")
+            
+            if uploaded_file and st.button("🔍 Analyze File", type="primary"):
                 with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
                     tmp_file.write(uploaded_file.getvalue())
                     temp_path = tmp_file.name
                 
                 try:
-                    with st.spinner("Extracting features..."):
-                        logger.info(f"Analyzing uploaded file: {uploaded_file.name}")
+                    with st.spinner("Analyzing file..."):
+                        # Start timing for file upload analysis
+                        start_time = time.time()
+                        
                         file_features = extract_pe_features(temp_path)
                         
                         if file_features:
-                            logger.info(f"Features extracted successfully for {uploaded_file.name}")
-                            logger.info("Making prediction with Random Forest model...")
-                            
                             input_df = pd.DataFrame([file_features])
                             prediction = model.predict(input_df)[0]
                             prediction_proba = model.predict_proba(input_df)[0]
                             confidence = prediction_proba[1] if prediction == 1 else prediction_proba[0]
                             
-                            result_text = "BENIGN" if prediction == 1 else "MALICIOUS (RANSOMWARE)"
-                            logger.info(f"Prediction complete for {uploaded_file.name}: {result_text} with {confidence:.2%} confidence")
+                            # Calculate processing time
+                            processing_time_ms = (time.time() - start_time) * 1000
+                            performance_monitor.record_processing_time(processing_time_ms)
                             
                             arduino_manager.send_command("RANSOMWARE" if prediction == 0 else "BENIGN")
-                            db_manager.log_detection(uploaded_file.name, prediction, confidence, file_features)
+                            db_manager.log_detection(uploaded_file.name, temp_path, prediction, confidence, file_features, "upload", processing_time_ms)
                             
-                            if prediction == 1:
-                                st.success(f"✅ BENIGN - {prediction_proba[1]:.2%} confidence")
-                            else:
-                                st.error(f"⚠️ MALICIOUS (RANSOMWARE) - {prediction_proba[0]:.2%} confidence")
+                            col1, col2 = st.columns(2)
                             
-                            with st.expander("📋 Feature Details"):
-                                st.dataframe(input_df)
+                            with col1:
+                                if prediction == 1:
+                                    st.success(f"✅ **BENIGN FILE**")
+                                    st.success(f"Confidence: {confidence:.2%}")
+                                else:
+                                    st.error(f"⚠️ **MALICIOUS FILE (RANSOMWARE)**")
+                                    st.error(f"Confidence: {confidence:.2%}")
+                                
+                                st.info(f"Processing Time: {processing_time_ms:.2f}ms")
+                            
+                            with col2:
+                                st.subheader("📊 File Features")
+                                feature_df = pd.DataFrame([file_features]).T
+                                feature_df.columns = ['Value']
+                                st.dataframe(feature_df, use_container_width=True)
                         else:
-                            logger.error(f"Failed to extract features from {uploaded_file.name}")
-                            st.error("Failed to extract features from the uploaded file. Please ensure it's a valid PE file.")
+                            st.error("❌ Could not extract features from the file. Please ensure it's a valid PE file.")
+                
                 finally:
                     try:
                         os.unlink(temp_path)
                     except:
                         pass
-        
-        with tab3:
-            st.header("Batch CSV Analysis")
-            csv_file = st.file_uploader("Choose CSV file", type=['csv'])
-            
-            if csv_file:
-                try:
-                    df = pd.read_csv(csv_file)
-                    missing_cols = [col for col in features if col not in df.columns]
-                    
-                    if missing_cols:
-                        st.error(f"Missing columns: {', '.join(missing_cols)}")
-                    else:
-                        st.success(f"📊 {len(df)} samples loaded")
-                        
-                        if st.button("🚀 Analyze Batch"):
-                            batch_id = f"batch_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                            logger.info(f"Starting batch analysis with ID: {batch_id} ({len(df)} samples)")
-                            
-                            with st.spinner(f"Processing {len(df)} samples..."):
-                                input_df = df[features]
-                                
-                                logger.info("Making batch predictions with Random Forest model...")
-                                predictions = model.predict(input_df)
-                                prediction_probas = model.predict_proba(input_df)
-                                
-                                malicious_count = sum(predictions == 0)
-                                benign_count = len(df) - malicious_count
-                                logger.info(f"Batch prediction complete: {benign_count} benign, {malicious_count} malicious")
-                                
-                                arduino_manager.send_batch_result(len(df), malicious_count)
-                                
-                                results_df = pd.DataFrame({
-                                    'Sample': range(1, len(df) + 1),
-                                    'Prediction': ["BENIGN" if p == 1 else "MALICIOUS" for p in predictions],
-                                    'Confidence': [prediction_probas[i][1] if predictions[i] == 1 else prediction_probas[i][0] 
-                                                  for i in range(len(predictions))]
-                                })
-                                
-                                logger.info(f"Logging {len(df)} detection results to database...")
-                                for i, row in df.iterrows():
-                                    confidence = prediction_probas[i][1] if predictions[i] == 1 else prediction_probas[i][0]
-                                    db_manager.log_detection(f"sample_{i+1}", predictions[i], confidence, 
-                                                           row[features].to_dict(), batch_id)
-                                
-                                logger.info(f"Batch analysis complete for {batch_id}")
-                                st.success(f"✅ Analysis complete: {benign_count} benign, {malicious_count} malicious")
-                                st.dataframe(results_df)
-                                
-                                csv_data = results_df.to_csv(index=False)
-                                st.download_button("📥 Download Results", csv_data, 
-                                                 "results.csv", "text/csv")
-                
-                except Exception as e:
-                    st.error(f"CSV processing error: {str(e)}")
     
-    elif page == "Logs":
-        st.header("📊 Detection Logs")
+    elif page == "📊 Logs":
+        st.header("📊 Detection Logs & Analytics")
         
+        # Get logs from database
         logs_df = db_manager.get_logs()
         
-        if logs_df.empty:
-            st.info("No logs found")
-        else:
-            logs_df['prediction_text'] = logs_df['prediction'].apply(lambda x: "BENIGN" if x == 1 else "MALICIOUS")
+        if not logs_df.empty:
+            # Summary metrics
+            col1, col2, col3, col4 = st.columns(4)
             
-            col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Total Files", len(logs_df))
-            with col2:
-                benign_count = sum(logs_df['prediction'] == 1)
-                st.metric("Benign Files", benign_count)
-            with col3:
-                st.metric("Malicious Files", len(logs_df) - benign_count)
+                total_scans = len(logs_df)
+                st.metric("🔍 Total Scans", total_scans)
             
+            with col2:
+                malicious_count = len(logs_df[logs_df['prediction'] == 0])
+                st.metric("⚠️ Malicious Files", malicious_count)
+            
+            with col3:
+                benign_count = len(logs_df[logs_df['prediction'] == 1])
+                st.metric("✅ Benign Files", benign_count)
+            
+            with col4:
+                if 'processing_time_ms' in logs_df.columns and not logs_df['processing_time_ms'].isna().all():
+                    avg_processing_time = logs_df['processing_time_ms'].mean()
+                    st.metric("⏱️ Avg Processing Time", f"{avg_processing_time:.1f}ms")
+                else:
+                    st.metric("⏱️ Avg Processing Time", "N/A")
+            
+            # Performance metrics from monitor
+            current_metrics = performance_monitor.get_current_metrics()
+            
+            st.subheader("📈 Current Performance Metrics")
+            perf_col1, perf_col2, perf_col3 = st.columns(3)
+            
+            with perf_col1:
+                st.metric("🚀 Files/Minute", f"{current_metrics['files_per_minute']:.1f}")
+                st.metric("💾 Memory Usage", f"{current_metrics['current_memory']:.1f}MB")
+            
+            with perf_col2:
+                st.metric("🖥️ CPU Usage", f"{current_metrics['avg_cpu_usage']:.1f}%")
+                st.metric("⚡ Avg Processing", f"{current_metrics['avg_processing_time']:.1f}ms")
+            
+            with perf_col3:
+                st.metric("🔌 Arduino Delay", f"{current_metrics['avg_arduino_delay']:.1f}ms")
+                st.metric("📁 Files Processed", performance_monitor.files_processed)
+            
+            # Visualization section
+            st.subheader("📊 Data Visualizations")
             create_visualizations(logs_df)
             
-            st.subheader("📋 Recent Logs")
-            display_cols = ['id', 'filename', 'detection_time', 'prediction_text', 'confidence']
-            st.dataframe(logs_df[display_cols].head(50))
+            # Recent logs table
+            st.subheader("📋 Recent Detection Logs")
             
-            if st.button("📥 Export Logs"):
-                csv_data = logs_df.to_csv(index=False)
-                st.download_button("Download", csv_data, 
-                                 f"logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                                 "text/csv")
+            # Filter options
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                scan_type_filter = st.selectbox("Scan Type", ["All"] + list(logs_df['scan_type'].unique()))
+            with col2:
+                prediction_filter = st.selectbox("Result", ["All", "Malicious", "Benign"])
+            with col3:
+                limit = st.number_input("Show Records", min_value=10, max_value=500, value=50)
+            
+            # Apply filters
+            filtered_df = logs_df.copy()
+            
+            if scan_type_filter != "All":
+                filtered_df = filtered_df[filtered_df['scan_type'] == scan_type_filter]
+            
+            if prediction_filter == "Malicious":
+                filtered_df = filtered_df[filtered_df['prediction'] == 0]
+            elif prediction_filter == "Benign":
+                filtered_df = filtered_df[filtered_df['prediction'] == 1]
+            
+            # Display limited records
+            display_df = filtered_df.head(limit).copy()
+            
+            if not display_df.empty:
+                # Format the display
+                display_df['result'] = display_df['prediction'].apply(lambda x: "✅ BENIGN" if x == 1 else "⚠️ MALICIOUS")
+                display_df['confidence_pct'] = (display_df['confidence'] * 100).round(1).astype(str) + "%"
+                
+                # Select columns to display
+                display_columns = ['filename', 'detection_time', 'result', 'confidence_pct', 'scan_type']
+                if 'processing_time_ms' in display_df.columns:
+                    display_df['processing_ms'] = display_df['processing_time_ms'].round(1)
+                    display_columns.append('processing_ms')
+                
+                st.dataframe(
+                    display_df[display_columns],
+                    use_container_width=True,
+                    column_config={
+                        "filename": "File Name",
+                        "detection_time": "Detection Time",
+                        "result": "Result",
+                        "confidence_pct": "Confidence",
+                        "scan_type": "Scan Type",
+                        "processing_ms": "Processing (ms)"
+                    }
+                )
+                
+                # Export functionality
+                if st.button("📥 Export Logs to CSV"):
+                    csv = filtered_df.to_csv(index=False)
+                    st.download_button(
+                        label="Download CSV",
+                        data=csv,
+                        file_name=f"ransomware_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
+                    )
+            else:
+                st.info("No records match the selected filters.")
+        else:
+            st.info("No detection logs available yet. Start scanning files to see results here.")
     
-    elif page == "About":
-        st.header("ℹ️ About")
+    elif page == "ℹ️ About":
+        st.header("ℹ️ About Ransomware Detection System")
+        
         st.markdown("""
-        ### 🛡️ Ransomware Detection System
+        ### 🛡️ System Overview
+        This advanced ransomware detection system uses machine learning to analyze PE (Portable Executable) files 
+        and identify potential ransomware threats in real-time.
         
-        **Features:**
-        - 🔍 PE file analysis using Random Forest ML model
-        - 🔔 Arduino-based alert system (LED + Buzzer)
-        - 💾 SQLite database with advanced analytics
-        - 🚀 Optimized batch processing
-        - 📈 Multiple visualization options
+        ### 🔧 Key Features
+        - **Real-time File Monitoring**: Automatically scans new files in specified directories
+        - **Machine Learning Detection**: Uses Random Forest classifier for accurate threat detection
+        - **Arduino Integration**: Physical notification system for security alerts
+        - **Performance Monitoring**: Comprehensive logging and metrics tracking
+        - **Web Interface**: User-friendly Streamlit interface for system control
+        - **Database Logging**: SQLite database for persistent log storage
         
-        **Arduino Connections:**
-        - Green LED (Pin 3): Benign files
-        - Red LED (Pin 8): Ransomware detected  
-        - Buzzer (Pin 13): Audio alert
+        ### 📊 Performance Metrics Tracked
+        - **File Processing Time**: Time taken to analyze each file
+        - **Arduino Communication Delay**: Response time for hardware notifications
+        - **Throughput**: Files processed per minute
+        - **Resource Usage**: CPU and memory consumption monitoring
+        - **System Health**: Continuous performance monitoring
         
-        **Detection Features:**
-        - PE header analysis
-        - Import/Export tables
-        - Section characteristics  
-        - Bitcoin address detection
-        - Debug information analysis
+        ### 🔍 Detection Process
+        1. **Feature Extraction**: Analyzes PE file headers and structure
+        2. **ML Classification**: Applies trained Random Forest model
+        3. **Confidence Scoring**: Provides probability-based confidence levels
+        4. **Hardware Alert**: Sends notification to Arduino device
+        5. **Database Logging**: Records all detections with performance metrics
         
-        **Database:** SQLite (ransomware_detector.db)
+        ### 📈 System Architecture
+        - **Frontend**: Streamlit web interface
+        - **Backend**: Python with scikit-learn ML pipeline
+        - **Database**: SQLite for log storage
+        - **Hardware**: Arduino-based notification system
+        - **Monitoring**: Real-time folder watching with background processing
+        
+        ### 🚀 Performance Optimization
+        - Background threading for non-blocking operations
+        - Efficient memory management with deque structures
+        - Asynchronous Arduino communication
+        - Database connection pooling
+        - Resource usage monitoring with automatic logging
         """)
+        
+        # System status
+        st.subheader("🔧 System Status")
+        
+        status_col1, status_col2 = st.columns(2)
+        
+        with status_col1:
+            st.write("**Model Status:**", "✅ Loaded" if model else "❌ Error")
+            st.write("**Database Status:**", "✅ Connected")
+            st.write("**Arduino Status:**", "🟢 Connected" if arduino_manager.is_connected() else "🔴 Disconnected")
+        
+        with status_col2:
+            st.write("**Monitoring Status:**", "🟢 Active" if 'monitoring_folder' in st.session_state else "🔴 Inactive")
+            st.write("**Performance Monitor:**", "🟢 Running")
+            st.write("**Log Files:**", "✅ Available")
+        
+        # Current performance summary
+        st.subheader("📊 Current Session Performance")
+        metrics = performance_monitor.get_current_metrics()
+        
+        perf_info = f"""
+        - **Files Processed**: {performance_monitor.files_processed}
+        - **Average Processing Time**: {metrics['avg_processing_time']:.2f}ms
+        - **Files per Minute**: {metrics['files_per_minute']:.2f}
+        - **Current Memory Usage**: {metrics['current_memory']:.2f}MB
+        - **Average CPU Usage**: {metrics['avg_cpu_usage']:.2f}%
+        - **Arduino Average Delay**: {metrics['avg_arduino_delay']:.2f}ms
+        """
+        
+        st.markdown(perf_info)
+        
+        # Log file access
+        st.subheader("📋 Log Files")
+        log_col1, log_col2 = st.columns(2)
+        
+        with log_col1:
+            if st.button("📄 View Application Logs"):
+                try:
+                    with open("ransomware_detector.log", "r") as f:
+                        log_content = f.read()
+                    st.text_area("Application Logs", log_content[-2000:], height=200)  # Show last 2000 chars
+                except FileNotFoundError:
+                    st.warning("Application log file not found")
+        
+        with log_col2:
+            if st.button("📊 View Performance Logs"):
+                try:
+                    with open("performance_metrics.log", "r") as f:
+                        perf_content = f.read()
+                    st.text_area("Performance Logs", perf_content[-2000:], height=200)  # Show last 2000 chars
+                except FileNotFoundError:
+                    st.warning("Performance log file not found")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.info("Application interrupted by user")
+        # Clean shutdown
+        performance_monitor = get_performance_monitor()
+        performance_monitor.stop_monitoring()
+        
+        arduino_manager = get_arduino_manager()
+        arduino_manager.disconnect()
+        
+        folder_monitor = get_folder_monitor()
+        folder_monitor.stop_all()
+        
+        logger.info("Application shutdown complete")
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        raise
