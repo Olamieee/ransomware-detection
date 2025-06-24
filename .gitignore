@@ -1,9 +1,4 @@
-sample_pe_data.csv
-arduino_helper.py
-db_helper.py
-ransomware_alert_system.ino
-streamlit_app_updated 2.py
-Book1.csv
+performance_metrics.log
 ransomware_detector.log
 ransomware_detection.db
 Procfile

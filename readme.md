@@ -46,7 +46,7 @@ pip install -r requirements.txt
 
 1. Start the Streamlit application:
 ```bash
-streamlit run streamlit_app_updated.py
+streamlit run ransomware_updated_app.py
 ```
 
 2. Navigate to the provided local URL (typically http://localhost:8501)
@@ -54,7 +54,7 @@ streamlit run streamlit_app_updated.py
 3. Choose one of the three detection methods:
    - **Manual Input**: Enter PE file characteristics directly
    - **File Upload**: Upload a .dll or .exe file for analysis
-   - **CSV Upload**: Process multiple samples via CSV
+   - **Real-time File Monitoring**: Automatically scans  files in specified directories and new files that are added.
 
 4. View results and detection logs in the application
 
@@ -87,6 +87,13 @@ Detection results are stored in an SQLite database with the following schema:
 - Prediction result
 - Confidence score
 - Feature values
+
+### Performance Optimization
+- Background threading for non-blocking operations
+- Efficient memory management with deque structures
+- Asynchronous Arduino communication
+- Database connection pooling
+- Resource usage monitoring with automatic logging
 
 ## Security Considerations
 
