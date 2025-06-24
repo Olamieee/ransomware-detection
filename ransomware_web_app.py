@@ -29,7 +29,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("ransomware_detector.log"),
+        logging.FileHandler("ransomware_detector.log", encoding="utf-8"),
         logging.StreamHandler()
     ]
 )
@@ -37,7 +37,7 @@ logger = logging.getLogger("ransomware-detector")
 
 # Performance Metrics Logger
 perf_logger = logging.getLogger("performance-metrics")
-perf_handler = logging.FileHandler("performance_metrics.log")
+perf_handler = logging.FileHandler("performance_metrics.log", encoding="utf-8")
 perf_formatter = logging.Formatter('%(asctime)s - PERF - %(message)s')
 perf_handler.setFormatter(perf_formatter)
 perf_logger.addHandler(perf_handler)
@@ -124,6 +124,10 @@ class PerformanceMonitor:
         """Stop the performance monitoring"""
         self.monitoring = False
 
+# Replace your ArduinoManager class with this fixed version
+
+# Replace your ArduinoManager class with this fixed version
+
 class ArduinoManager:
     def __init__(self, performance_monitor):
         self.connection = None
@@ -131,11 +135,12 @@ class ArduinoManager:
         self.worker_thread = None
         self.running = False
         self.performance_monitor = performance_monitor
+        self.is_ready = False  # Add ready flag
     
     def find_arduino_ports(self):
         ports = serial.tools.list_ports.comports()
         return [port.device for port in ports if any(keyword in port.description.upper() 
-                for keyword in ['ARDUINO', 'CH340', 'USB'])]
+                for keyword in ['ARDUINO', 'CH340', 'USB', 'SERIAL'])]
     
     def connect(self, port=None):
         try:
@@ -148,17 +153,58 @@ class ArduinoManager:
                     return False, "No Arduino found"
                 port = ports[0]
             
-            self.connection = serial.Serial(port, 9600, timeout=2, write_timeout=2)
+            # Create connection with proper settings
+            self.connection = serial.Serial(
+                port=port, 
+                baudrate=9600, 
+                timeout=2, 
+                write_timeout=2,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE
+            )
+            
+            # Wait for Arduino to initialize (CRITICAL!)
             time.sleep(3)
+            
+            # Clear any existing data in buffers
+            self.connection.flushInput()
+            self.connection.flushOutput()
+            
+            # Wait for Arduino ready message
+            self.wait_for_ready()
             
             if not self.running:
                 self.start_worker_thread()
             
-            logger.info(f"Arduino connected: {port}")
+            logger.info(f"Arduino connected and ready: {port}")
             return True, f"Connected to {port}"
+            
         except Exception as e:
             logger.error(f"Arduino connection error: {str(e)}")
             return False, f"Connection error: {str(e)}"
+    
+    def wait_for_ready(self):
+        """Wait for Arduino to send ready message"""
+        timeout = 10  # 10 seconds timeout
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            if self.connection.in_waiting > 0:
+                try:
+                    line = self.connection.readline().decode('utf-8').strip()
+                    logger.info(f"Arduino says: {line}")
+                    if "Ready" in line or "Waiting" in line:
+                        self.is_ready = True
+                        return True
+                except:
+                    pass
+            time.sleep(0.1)
+        
+        # If no ready message, assume it's ready after timeout
+        self.is_ready = True
+        logger.warning("Arduino ready timeout - assuming ready")
+        return True
     
     def start_worker_thread(self):
         self.running = True
@@ -170,38 +216,107 @@ class ArduinoManager:
             try:
                 command = self.command_queue.get(timeout=1)
                 
-                # Record start time for Arduino communication
-                start_time = time.time()
-                
-                if self.connection and self.connection.is_open:
-                    self.connection.write(command.encode() + b'\n')
+                if self.connection and self.connection.is_open and self.is_ready:
+                    # Record start time for Arduino communication
+                    start_time = time.time()
+                    
+                    # Send command with proper line ending
+                    command_bytes = (command + '\n').encode('utf-8')
+                    self.connection.write(command_bytes)
                     self.connection.flush()
+                    
+                    # Wait a bit for Arduino to process
+                    time.sleep(0.1)
                     
                     # Calculate and record Arduino delay
                     delay_ms = (time.time() - start_time) * 1000
                     self.performance_monitor.record_arduino_delay(delay_ms)
                     
-                    logger.info(f"Arduino command sent: {command} (Delay: {delay_ms:.2f}ms)")
+                    logger.info(f"✓ Arduino command sent: {command} (Delay: {delay_ms:.2f}ms)")
+                    
+                    # Check for Arduino response
+                    self.check_arduino_response()
                 
                 self.command_queue.task_done()
+                
             except queue.Empty:
                 continue
             except Exception as e:
                 logger.error(f"Arduino communication error: {str(e)}")
+                time.sleep(0.5)
+    
+    def check_arduino_response(self):
+        """Check for Arduino response messages"""
+        try:
+            if self.connection.in_waiting > 0:
+                response = self.connection.readline().decode('utf-8').strip()
+                if response:
+                    logger.info(f"Arduino response: {response}")
+        except:
+            pass
     
     def send_command(self, command):
+        """Send command to Arduino with validation"""
+        if not self.is_connected():
+            logger.warning(f"Cannot send command '{command}' - Arduino not connected")
+            return False
+            
+        if not self.is_ready:
+            logger.warning(f"Cannot send command '{command}' - Arduino not ready")
+            return False
+        
+        # Add command to queue if not full
         if not self.command_queue.full():
-            self.command_queue.put(command)
+            self.command_queue.put(command.upper())  # Ensure uppercase
+            logger.info(f"Command queued: {command}")
+            return True
+        else:
+            logger.warning(f"Command queue full, dropping: {command}")
+            return False
+    
+    def send_command_direct(self, command):
+        """Send command directly without queue (for testing)"""
+        if self.connection and self.connection.is_open:
+            try:
+                command_bytes = (command.upper() + '\n').encode('utf-8')
+                self.connection.write(command_bytes)
+                self.connection.flush()
+                logger.info(f"Direct command sent: {command}")
+                time.sleep(0.5)  # Give Arduino time to respond
+                self.check_arduino_response()
+                return True
+            except Exception as e:
+                logger.error(f"Direct command error: {str(e)}")
+                return False
+        return False
+    
+    def test_connection(self):
+        """Test Arduino connection with immediate feedback"""
+        logger.info("Testing Arduino connection...")
+        
+        # Test sequence
+        test_commands = ["TEST", "BENIGN", "RANSOMWARE", "STOP"]
+        
+        for cmd in test_commands:
+            if self.send_command_direct(cmd):
+                logger.info(f"✓ Test command '{cmd}' sent successfully")
+                time.sleep(2)  # Wait between commands
+            else:
+                logger.error(f"✗ Test command '{cmd}' failed")
+                return False
+                
+        return True
     
     def disconnect(self):
         self.running = False
+        self.is_ready = False
         if self.connection and self.connection.is_open:
             self.connection.close()
         self.connection = None
         logger.info("Arduino disconnected")
     
     def is_connected(self):
-        return self.connection and self.connection.is_open
+        return self.connection and self.connection.is_open and self.is_ready
 
 class DatabaseManager:
     def __init__(self, db_path):
@@ -526,21 +641,70 @@ def main():
         col1, col2 = st.columns(2)
         with col1:
             if st.button("🔗 Connect"):
-                success, message = arduino_manager.connect()
-                st.success(f"✅ {message}") if success else st.error(f"❌ {message}")
+                with st.spinner("Connecting to Arduino..."):
+                    success, message = arduino_manager.connect()
+                    if success:
+                        st.success(f"✅ {message}")
+                        if arduino_manager.test_connection():
+                            st.success("🎯 Arduino test successful!")
+                        else:
+                            st.warning("⚠️ Arduino connected but test failed")
+                    else:
+                        st.error(f"❌ {message}")
 
         with col2:
             if st.button("🔌 Disconnect"):
                 arduino_manager.disconnect()
                 st.info("Disconnected")
 
-        manual_port = st.text_input("Manual Port", placeholder="COM3")
+        # Manual port connection
+        manual_port = st.text_input("Manual Port", placeholder="COM3 or /dev/ttyUSB0")
         if st.button("Connect Manual") and manual_port:
-            success, message = arduino_manager.connect(manual_port)
-            st.success(message) if success else st.error(message)
+            with st.spinner(f"Connecting to {manual_port}..."):
+                success, message = arduino_manager.connect(manual_port)
+                if success:
+                    st.success(f"✅ {message}")
+                    if arduino_manager.test_connection():
+                        st.success("🎯 Arduino test successful!")
+                else:
+                    st.error(f"❌ {message}")
 
-        status = "🟢 Connected" if arduino_manager.is_connected() else "🔴 Disconnected"
+        # Manual testing buttons
+        if arduino_manager.is_connected():
+            st.subheader("🧪 Manual Tests")
+            test_col1, test_col2 = st.columns(2)
+
+            with test_col1:
+                if st.button("🔴 Test Ransomware"):
+                    arduino_manager.send_command_direct("RANSOMWARE")
+                    st.info("Ransomware alert sent")
+
+                if st.button("🟢 Test Benign"):
+                    arduino_manager.send_command_direct("BENIGN")
+                    st.info("Benign alert sent")
+
+            with test_col2:
+                if st.button("🔧 System Test"):
+                    arduino_manager.send_command_direct("TEST")
+                    st.info("System test sent")
+
+                if st.button("⏹️ Stop All"):
+                    arduino_manager.send_command_direct("STOP")
+                    st.info("Stop command sent")
+
+        # Status display
+        status = "🟢 Connected & Ready" if arduino_manager.is_connected() else "🔴 Disconnected"
         st.write(f"**Status:** {status}")
+
+        # 🔍 Scan Ports
+        if st.button("🔍 Scan Ports"):
+            ports = arduino_manager.find_arduino_ports()
+            if ports:
+                st.write("**Available Ports:**")
+                for port in ports:
+                    st.write(f"- {port}")
+            else:
+                st.write("No Arduino ports found")
 
         # 📁 Folder Monitor Section
         st.subheader("📁 Folder Monitor")
@@ -567,7 +731,11 @@ def main():
         if 'monitoring_folder' in st.session_state:
             st.success(f"📍 Active: {st.session_state.monitoring_folder}")
 
-    
+        # 🔄 Cache clear button
+        if st.button("🔄 Clear Cache"):
+            st.cache_resource.clear()
+            st.rerun()
+
     # Main Content
     page = st.radio("Navigation", ["🔍 Detection", "📊 Logs", "ℹ️ About"], horizontal=True)
     
